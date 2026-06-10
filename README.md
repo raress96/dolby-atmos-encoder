@@ -92,8 +92,11 @@ truehdd decode --presentation 3 movie.thd --output-path master
 #    -> master.atmos  +  master.atmos.audio  +  master.atmos.metadata
 
 # 3. Render objects to a 5.1 bed, then encode an E-AC-3 core with ffmpeg.
-dolby-atmos-encoder downmix master.atmos --out downmix.wav
-ffmpeg -i downmix.wav -c:a eac3 -b:a 768k -f eac3 core.eac3
+#    Pipe raw f32le straight into ffmpeg — works for any length (no WAV size cap):
+dolby-atmos-encoder downmix master.atmos --out - \
+  | ffmpeg -f f32le -ar 48000 -ac 6 -i - -c:a eac3 -b:a 768k -f eac3 core.eac3
+#    (Short clips only — `--out downmix.wav` then `ffmpeg -i downmix.wav ...` — but a 5.1
+#     32-bit-float WAV is capped at 4 GB, i.e. ~58 min at 48 kHz, so prefer the pipe above.)
 
 # 4. Inject per-frame Atmos metadata (OAMD + JOC + the addbsi detection flag) into the core.
 dolby-atmos-encoder atmos core.eac3 master.atmos --out atmos.eac3
@@ -116,7 +119,7 @@ Run `--help` on each for details.
 | Command | Purpose |
 |---|---|
 | `inspect <atmos>` | Report a DAMF master's bed/object layout and metadata. |
-| `downmix <atmos> --out d.wav` | Render objects to a 5.1 bed WAV. |
+| `downmix <atmos> --out d.wav` | Render objects to a 5.1 bed WAV (`--out -` streams raw f32le to stdout — no 4 GB cap, pipe into ffmpeg). |
 | `atmos <core> <atmos> --out o.eac3` | Inject OAMD+JOC metadata + the addbsi flag into an E-AC-3 core. |
 | `oamd <core> <atmos> --out o.eac3` | OAMD only (no JOC). |
 | `coregraft <realcore> <myatmos> --out o.eac3` | Splice our metadata onto a real Dolby core (diagnostic). |
@@ -154,6 +157,30 @@ RESULT: object-based audio detected (Atmos objects present).
 
 Exit code `0` = objects present, `2` = channel-based only. (ffmpeg ≥5's `eac3` decoder also reports
 `+ Dolby Atmos` as a faster first-pass sanity check.)
+
+## Results / verified on
+
+Run end-to-end on a full feature film — a *Logan* (2017) 2160p UHD Blu-ray remux, TrueHD 7.1 + Atmos
+(137 min) — on a single WSL2 workstation:
+
+| Stage | Result |
+|---|---|
+| `truehdd decode` | 9,891,890 TrueHD frames → 395,675,600 samples (full 137 min), 16 GB DAMF essence |
+| `downmix --out -` → ffmpeg | 791 MB E-AC-3 core @ 768 kbps (raw-pipe path; no WAV size cap hit) |
+| `atmos` inject | 257,602 E-AC-3 frames; **13 dynamic objects + LFE**; JOC avg 213 B EMDF/frame |
+| Carriage | skip-field on **257,602 / 257,602** frames (100%); addbsi detection flag on all |
+| Output | 809 MB `atmos.eac3` |
+| **Cavern** | `HasObjects=True`, **13 objects**, 1 bed instance, 5-channel JOC downmix |
+
+**Memory is bounded by frame size, not file size.** The streaming frame-I/O path
+(`eac3::transform_frames_io`, ~4 MiB rolling buffer) holds a fixed working set regardless of length:
+a 1.25 GB synthetic core (487,424 frames) through `eac3inject` peaks at **7.9 MB RSS**. The `atmos`
+subcommand is the one exception — it loads the input core once for JOC context, so on the 791 MB
+Logan core it peaked at **815 MB RSS** (≈ core size; the *output* is still streamed). Output is
+byte-identical before and after the streaming refactor (golden SHA-256 verified).
+
+> These are *decoder-side* results: ffmpeg and Cavern both accept the stream as object Atmos. It
+> still will **not** engage Atmos on Dolby-certified hardware — see below for why.
 
 ---
 

@@ -171,14 +171,50 @@ src/
 
 ---
 
-## Licensing & provenance
+## Credits, sources & references
 
-- Some DSP / codec math is **ported or adapted from
-  [VoidXH/Cavern](https://github.com/VoidXH/Cavern)**, which is licensed for **non-commercial use**.
-  This project inherits that restriction: **personal / research use only — no commercial use and no
-  redistribution** without a clean-room rewrite and a license review. `publish = false` is set to
-  prevent accidental release to crates.io. **Review this before making the repository public.**
-- "Dolby", "Dolby Atmos", "Dolby Digital Plus", and "TrueHD" are trademarks of Dolby Laboratories.
-  This is an independent, unaffiliated interoperability/research project, not a Dolby product.
-- Built against the publicly available ETSI specifications **TS 102 366** (AC-3/E-AC-3 + Annex H
-  EMDF) and **TS 103 420** (object audio metadata / JOC).
+This project stands on open specifications and existing projects:
+
+- **[VoidXH/Cavern](https://github.com/VoidXH/Cavern)** — creator Bence Sgánetz
+  (<http://en.sbence.hu>). DSP/codec math for the 5.1 rendering, the OAMD/JOC decode logic, and the
+  object gain handling was **ported / adapted from Cavern's C# decoder**. Cavern is released under
+  its own **non-commercial, share-alike licence** — see [Licensing](#licensing--important) below.
+- **[truehdd](https://github.com/truehdd/truehdd)** (Apache-2.0) — the Dolby TrueHD decoder that
+  produces the DAMF (`.atmos` / `.audio` / `.metadata`) master this tool consumes. This crate began
+  life as a `truehdd` workspace member before being extracted into its own repository.
+- **ETSI TS 102 366** — Digital Audio Compression (AC-3, Enhanced AC-3), including **Annex H** (the
+  EMDF extensible-metadata container and the `emdf_protection` field).
+- **ETSI TS 103 420** — backwards-compatible object audio coding (OAMD / Joint Object Coding).
+- **ATSC A/52** — the AC-3 audio-block syntax underpinning the skip-field bit-walker.
+- **[FFmpeg](https://ffmpeg.org)** — used as an external tool for the E-AC-3 core encode and as a
+  reference decoder/validator (invoked as a separate process; not linked).
+- **Dolby** specifications and the
+  [Dolby Encoding Engine](https://github.com/DolbyLaboratories/dolby-encoding-engine) plugin SDK
+  were *examined* for context only. **No Dolby source code or keys are used or included here.**
+
+## Licensing — IMPORTANT
+
+> ⚠️ **Unresolved conflict.** The GitHub repository currently carries an **MIT** LICENSE, which is
+> **incompatible with the Cavern-derived code** in `src/`. This must be resolved before the code is
+> published.
+
+Cavern's licence (see `LICENSE.md` in the Cavern repo) **forbids selling** any part of the original
+or a modified version, requires modifications to be **released for free under Cavern's own licence**
+(share-alike — *not* MIT, which permits selling/sublicensing), requires **linking Cavern's
+repository as the source** and crediting the creator, and states these terms **still apply** to any
+project that includes the code. MIT grants rights Cavern withholds, so the two cannot coexist on the
+same files.
+
+Legitimate ways to resolve it:
+
+1. **Keep the repository private** — personal / research use only; remove or replace the MIT file.
+2. **Re-license the repo under Cavern's terms** (non-commercial, share-alike) with the required
+   Cavern attribution + source link — a legitimate *free* public release (but not MIT, not
+   commercial).
+3. **Clean-room rewrite** the Cavern-derived portions (re-derive from the ETSI specs without
+   consulting Cavern's source); only then can the project legitimately be MIT.
+
+`publish = false` is set in `Cargo.toml` to prevent accidental release to crates.io.
+
+"Dolby", "Dolby Atmos", "Dolby Digital Plus", and "TrueHD" are trademarks of Dolby Laboratories.
+This is an independent, unaffiliated interoperability / research project, not a Dolby product.

@@ -1,0 +1,29 @@
+[package]
+name = "dolby-atmos-encoder"
+version = "0.1.0"
+edition = "2024"
+description = "Research transcoder: Dolby Atmos Master (DAMF) -> E-AC-3 Joint Object Coding (DD+ Atmos). Software-correct, hardware-blocked by Dolby's proprietary keyed EMDF authentication. See README."
+readme = "README.md"
+# This crate ports non-commercial Cavern math and targets a trademarked Dolby format. Do NOT
+# release it to crates.io; see the "Licensing & provenance" section of the README.
+publish = false
+
+[[bin]]
+name = "dolby-atmos-encoder"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_yaml_ng = "0.10"
+log = "0.4"
+env_logger = "0.11"
+# Keyed-MAC stand-in for the EMDF protection seam (see src/emdf.rs::dolby_keyed_mac).
+hmac = "0.12"
+sha2 = "0.10"
+
+# Empty [workspace] table: makes this package its own workspace root so it detaches cleanly from
+# the parent `truehdd` Cargo workspace it physically lives under. Without this, cargo refuses to
+# build (the package is inside the truehdd workspace tree but not one of its members).
+[workspace]

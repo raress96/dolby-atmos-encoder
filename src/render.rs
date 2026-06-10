@@ -100,7 +100,10 @@ pub fn downmix(atmos: &Path, out: &Path, gain_db: f64) -> Result<()> {
         .context("manifest has no presentations")?;
 
     let caf = damf::read_caf_info(&dir.join(&pres.audio))?;
-    ensure!(caf.bits_per_channel == 24 && !caf.is_float(), "expected 24-bit int CAF essence");
+    ensure!(
+        caf.bits_per_channel == 24 && !caf.is_float(),
+        "expected 24-bit int CAF essence"
+    );
     let channels = caf.channels as usize;
 
     // Element ID → essence channel: bed channels first (manifest order), then objects.
@@ -137,7 +140,11 @@ pub fn downmix(atmos: &Path, out: &Path, gain_db: f64) -> Result<()> {
         if let Some(a) = e.active {
             st.1 = a;
         }
-        let g = if st.1 { pan_vbap(st.0[0], st.0[1]) } else { [0.0; 5] };
+        let g = if st.1 {
+            pan_vbap(st.0[0], st.0[1])
+        } else {
+            [0.0; 5]
+        };
         keys.entry(id).or_default().push((sp, g));
     }
 
@@ -221,25 +228,47 @@ pub fn downmix(atmos: &Path, out: &Path, gain_db: f64) -> Result<()> {
     }
     w.flush()?;
 
-    let db = |v: f32| if v > 0.0 { 20.0 * v.log10() } else { f32::NEG_INFINITY };
+    let db = |v: f32| {
+        if v > 0.0 {
+            20.0 * v.log10()
+        } else {
+            f32::NEG_INFINITY
+        }
+    };
     log::info!(
         "peak dBFS  L {:.1}  R {:.1}  C {:.1}  LFE {:.1}  Ls {:.1}  Rs {:.1}",
-        db(peak[0]), db(peak[1]), db(peak[2]), db(peak[3]), db(peak[4]), db(peak[5]),
+        db(peak[0]),
+        db(peak[1]),
+        db(peak[2]),
+        db(peak[3]),
+        db(peak[4]),
+        db(peak[5]),
     );
     if peak.iter().any(|&p| p > 1.0) {
-        log::warn!("output exceeds 0 dBFS (max {:.2}) — consider --gain-db -3", peak.iter().cloned().fold(0.0, f32::max));
+        log::warn!(
+            "output exceeds 0 dBFS (max {:.2}) — consider --gain-db -3",
+            peak.iter().cloned().fold(0.0, f32::max)
+        );
     }
     log::info!("wrote {}", out.display());
     Ok(())
 }
 
 /// Minimal WAVE_FORMAT_EXTENSIBLE / IEEE-float / 5.1 header (sizes known up front).
-fn write_wav_header<W: Write>(w: &mut W, channels: u16, sample_rate: u32, frames: u64) -> Result<()> {
+fn write_wav_header<W: Write>(
+    w: &mut W,
+    channels: u16,
+    sample_rate: u32,
+    frames: u64,
+) -> Result<()> {
     let bits = 32u16;
     let block_align = channels * bits / 8;
     let byte_rate = sample_rate * block_align as u32;
     let data_size = frames * block_align as u64;
-    ensure!(data_size + 60 < u32::MAX as u64, "output too large for WAV; stream via pipe instead");
+    ensure!(
+        data_size + 60 < u32::MAX as u64,
+        "output too large for WAV; stream via pipe instead"
+    );
 
     // RIFF size = "WAVE"(4) + fmt chunk(8+40) + data chunk(8+data_size) = 60 + data_size.
     w.write_all(b"RIFF")?;

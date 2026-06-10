@@ -29,15 +29,16 @@ const BNDTAB: [u8; 50] = [
 
 const MASKTAB: [u8; 256] = [
     0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
-    26, 27, 28, 28, 28, 29, 29, 29, 30, 30, 30, 31, 31, 31, 32, 32, 32, 33, 33, 33, 34, 34, 34, 35, 35, 35,
-    35, 35, 35, 36, 36, 36, 36, 36, 36, 37, 37, 37, 37, 37, 37, 38, 38, 38, 38, 38, 38, 39, 39, 39, 39, 39,
-    39, 40, 40, 40, 40, 40, 40, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 42, 42, 42, 42, 42, 42, 42,
-    42, 42, 42, 42, 42, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 44, 44, 44, 44, 44, 44, 44, 44, 44,
-    44, 44, 44, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45,
-    45, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 47,
-    47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 48, 48, 48,
-    48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 49, 49, 49, 49, 49,
-    49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 0, 0, 0,
+    26, 27, 28, 28, 28, 29, 29, 29, 30, 30, 30, 31, 31, 31, 32, 32, 32, 33, 33, 33, 34, 34, 34, 35,
+    35, 35, 35, 35, 35, 36, 36, 36, 36, 36, 36, 37, 37, 37, 37, 37, 37, 38, 38, 38, 38, 38, 38, 39,
+    39, 39, 39, 39, 39, 40, 40, 40, 40, 40, 40, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 41, 42,
+    42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 42, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 43, 44,
+    44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 44, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45,
+    45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 45, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46,
+    46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 46, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47,
+    47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 47, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48,
+    48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 48, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49,
+    49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 49, 0, 0, 0,
 ];
 
 const LATAB: [u8; 256] = [
@@ -84,9 +85,9 @@ const HTH: [[i32; 50]; 3] = [
 ];
 
 const BAPTAB: [u8; 64] = [
-    0, 1, 1, 1, 1, 1, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9, 10,
-    10, 10, 10, 11, 11, 11, 11, 12, 12, 12, 12, 13, 13, 13, 13, 14, 14, 14, 14, 14, 14, 14, 14, 15,
-    15, 15, 15, 15, 15, 15, 15, 15,
+    0, 1, 1, 1, 1, 1, 2, 2, 3, 3, 3, 4, 4, 5, 5, 6, 6, 6, 6, 7, 7, 7, 7, 8, 8, 8, 8, 9, 9, 9, 9,
+    10, 10, 10, 10, 11, 11, 11, 11, 12, 12, 12, 12, 13, 13, 13, 13, 14, 14, 14, 14, 14, 14, 14, 14,
+    15, 15, 15, 15, 15, 15, 15, 15, 15,
 ];
 
 /// bits per quantized mantissa, indexed by bap (0..15). bap 1,2,4 are grouped; see count_mantissa.
@@ -100,14 +101,38 @@ const GROUP_DIV: [i32; 3] = [3, 6, 12];
 
 /// frmcplexpstr_tbl[frmchexpstr][block] → exp strategy (0=Reuse,1=D15,2=D25,3=D45).
 const FRM_EXP_STR: [[u8; 6]; 32] = [
-    [1, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 3], [1, 0, 0, 0, 2, 0], [1, 0, 0, 0, 3, 3],
-    [2, 0, 0, 2, 0, 0], [2, 0, 0, 2, 0, 3], [2, 0, 0, 3, 2, 0], [2, 0, 0, 3, 3, 3],
-    [2, 0, 1, 0, 0, 0], [2, 0, 2, 0, 0, 3], [2, 0, 2, 0, 2, 0], [2, 0, 2, 0, 3, 3],
-    [2, 0, 3, 2, 0, 0], [2, 0, 3, 2, 0, 3], [2, 0, 3, 3, 2, 0], [2, 0, 3, 3, 3, 3],
-    [3, 1, 0, 0, 0, 0], [3, 1, 0, 0, 0, 3], [3, 2, 0, 0, 2, 0], [3, 2, 0, 0, 3, 3],
-    [3, 2, 0, 2, 0, 0], [3, 2, 0, 2, 0, 3], [3, 2, 0, 3, 2, 0], [3, 2, 0, 3, 3, 3],
-    [3, 3, 1, 0, 0, 0], [3, 3, 2, 0, 0, 3], [3, 3, 2, 0, 2, 0], [3, 3, 2, 0, 3, 3],
-    [3, 3, 3, 2, 0, 0], [3, 3, 3, 2, 0, 3], [3, 3, 3, 3, 2, 0], [3, 3, 3, 3, 3, 3],
+    [1, 0, 0, 0, 0, 0],
+    [1, 0, 0, 0, 0, 3],
+    [1, 0, 0, 0, 2, 0],
+    [1, 0, 0, 0, 3, 3],
+    [2, 0, 0, 2, 0, 0],
+    [2, 0, 0, 2, 0, 3],
+    [2, 0, 0, 3, 2, 0],
+    [2, 0, 0, 3, 3, 3],
+    [2, 0, 1, 0, 0, 0],
+    [2, 0, 2, 0, 0, 3],
+    [2, 0, 2, 0, 2, 0],
+    [2, 0, 2, 0, 3, 3],
+    [2, 0, 3, 2, 0, 0],
+    [2, 0, 3, 2, 0, 3],
+    [2, 0, 3, 3, 2, 0],
+    [2, 0, 3, 3, 3, 3],
+    [3, 1, 0, 0, 0, 0],
+    [3, 1, 0, 0, 0, 3],
+    [3, 2, 0, 0, 2, 0],
+    [3, 2, 0, 0, 3, 3],
+    [3, 2, 0, 2, 0, 0],
+    [3, 2, 0, 2, 0, 3],
+    [3, 2, 0, 3, 2, 0],
+    [3, 2, 0, 3, 3, 3],
+    [3, 3, 1, 0, 0, 0],
+    [3, 3, 2, 0, 0, 3],
+    [3, 3, 2, 0, 2, 0],
+    [3, 3, 2, 0, 3, 3],
+    [3, 3, 3, 2, 0, 0],
+    [3, 3, 3, 2, 0, 3],
+    [3, 3, 3, 3, 2, 0],
+    [3, 3, 3, 3, 3, 3],
 ];
 
 const NCH: usize = 5; // full-bandwidth channels for acmod 7
@@ -161,7 +186,11 @@ impl Alloc {
 fn log_add(a: i32, b: i32) -> i32 {
     let c = a - b;
     let address = ((c.abs() >> 1) as usize).min(255);
-    if c >= 0 { a + LATAB[address] as i32 } else { b + LATAB[address] as i32 }
+    if c >= 0 {
+        a + LATAB[address] as i32
+    } else {
+        b + LATAB[address] as i32
+    }
 }
 
 fn calc_lowcomp(a: i32, b0: i32, b1: i32, bin: usize) -> i32 {
@@ -572,13 +601,27 @@ fn walk_block(
         }
         let snroffset = ((((csnroffst as i32 - 15) << 4) + fsnroffst as i32) << 2) as i32;
         allocate(&mut alloc[ch], 0, endmant[ch], fgain, snroffset, fscod);
-        mant_bits += count_mantissa(&alloc[ch].bap, 0, endmant[ch], &mut bap1pos, &mut bap2pos, &mut bap4pos);
+        mant_bits += count_mantissa(
+            &alloc[ch].bap,
+            0,
+            endmant[ch],
+            &mut bap1pos,
+            &mut bap2pos,
+            &mut bap4pos,
+        );
     }
     // LFE mantissas (lfeendmant=7), uses the most recent LFE exponents.
     if csnroffst != 0 || fsnroffst != 0 {
         let snroffset = ((((csnroffst as i32 - 15) << 4) + fsnroffst as i32) << 2) as i32;
         allocate(lfe_alloc, 0, 7, fgain, snroffset, fscod);
-        mant_bits += count_mantissa(&lfe_alloc.bap, 0, 7, &mut bap1pos, &mut bap2pos, &mut bap4pos);
+        mant_bits += count_mantissa(
+            &lfe_alloc.bap,
+            0,
+            7,
+            &mut bap1pos,
+            &mut bap2pos,
+            &mut bap4pos,
+        );
     }
 
     pos = skip_point + mant_bits as usize;
@@ -587,7 +630,11 @@ fn walk_block(
 
 /// Walk all 6 audio blocks of a core frame. Returns the per-block skip-field bit offsets and the
 /// bit position after the last block (the start of the aux/errorcheck tail). None if unsupported.
-pub fn skip_points(frame: &[u8], info: &FrameInfo, bsi_end_bit: usize) -> Option<(Vec<usize>, usize)> {
+pub fn skip_points(
+    frame: &[u8],
+    info: &FrameInfo,
+    bsi_end_bit: usize,
+) -> Option<(Vec<usize>, usize)> {
     let af = parse_audfrm(frame, info, bsi_end_bit)?;
     let fscod = info.fscod as usize;
     if fscod > 2 {
@@ -601,7 +648,15 @@ pub fn skip_points(frame: &[u8], info: &FrameInfo, bsi_end_bit: usize) -> Option
     let mut points = Vec::with_capacity(6);
     for block in 0..6 {
         let (sp, next) = walk_block(
-            frame, &af, block, pos, fscod, &mut alloc, &mut lfe_alloc, &mut endmant, &mut lfe_have_exp,
+            frame,
+            &af,
+            block,
+            pos,
+            fscod,
+            &mut alloc,
+            &mut lfe_alloc,
+            &mut endmant,
+            &mut lfe_have_exp,
         )?;
         points.push(sp);
         pos = next;

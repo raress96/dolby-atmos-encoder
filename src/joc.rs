@@ -63,15 +63,27 @@ fn huff_decode(table: &[[i32; 2]], r: &mut BitReader) -> Result<i32, String> {
 }
 
 fn mtx_table(quant: u8) -> &'static [[i32; 2]] {
-    if quant == 1 { &JOC_HUFF_CODE_FINE_GENERIC } else { &JOC_HUFF_CODE_COARSE_GENERIC }
+    if quant == 1 {
+        &JOC_HUFF_CODE_FINE_GENERIC
+    } else {
+        &JOC_HUFF_CODE_COARSE_GENERIC
+    }
 }
 
 fn vec_table(quant: u8) -> &'static [[i32; 2]] {
-    if quant == 1 { &JOC_HUFF_CODE_FINE_COEFF_SPARSE } else { &JOC_HUFF_CODE_COARSE_COEFF_SPARSE }
+    if quant == 1 {
+        &JOC_HUFF_CODE_FINE_COEFF_SPARSE
+    } else {
+        &JOC_HUFF_CODE_COARSE_COEFF_SPARSE
+    }
 }
 
 fn idx_table(channels: usize) -> &'static [[i32; 2]] {
-    if channels == 7 { &JOC_HUFF_CODE_7CH_POS_INDEX_SPARSE } else { &JOC_HUFF_CODE_5CH_POS_INDEX_SPARSE }
+    if channels == 7 {
+        &JOC_HUFF_CODE_7CH_POS_INDEX_SPARSE
+    } else {
+        &JOC_HUFF_CODE_5CH_POS_INDEX_SPARSE
+    }
 }
 
 /// Decode a JOC EMDF payload (id 14). Mirrors Cavern's Decode{Header,Info,Data}.
@@ -83,7 +95,11 @@ pub fn decode_joc(payload: &[u8]) -> Result<JocFrame, String> {
     if dmx_config > 4 {
         return Err(format!("unsupported joc_dmx_config_idx {dmx_config}"));
     }
-    let channel_count = if dmx_config == 0 || dmx_config == 3 { 5 } else { 7 };
+    let channel_count = if dmx_config == 0 || dmx_config == 3 {
+        5
+    } else {
+        7
+    };
     let object_count = r.read(6) as usize + 1;
     let ext_config = r.read(3);
     if ext_config != 0 {
@@ -363,7 +379,11 @@ mod tests {
                     q = q2;
                 }
                 let got = dequantize_gain(q);
-                assert!((got - want[ch]).abs() <= FINE_STEP / 2.0 + 1e-6, "ch{ch}: {got} vs {}", want[ch]);
+                assert!(
+                    (got - want[ch]).abs() <= FINE_STEP / 2.0 + 1e-6,
+                    "ch{ch}: {got} vs {}",
+                    want[ch]
+                );
             }
         }
     }

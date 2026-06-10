@@ -27,7 +27,11 @@ pub(crate) struct BitWriter {
 
 impl BitWriter {
     pub(crate) fn new() -> Self {
-        Self { out: Vec::new(), cur: 0, nbits: 0 }
+        Self {
+            out: Vec::new(),
+            cur: 0,
+            nbits: 0,
+        }
     }
 
     #[inline]
@@ -120,7 +124,11 @@ pub(crate) struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     pub(crate) fn new(data: &'a [u8]) -> Self {
-        Self { data, pos: 0, end: data.len() * 8 }
+        Self {
+            data,
+            pos: 0,
+            end: data.len() * 8,
+        }
     }
 
     pub(crate) fn read(&mut self, n: u32) -> u32 {
@@ -195,7 +203,10 @@ fn quantize_pos(p: ObjectPos) -> (u32, u32, u32, u32) {
 pub fn encode_oamd(objects: &[ObjectPos], lfe: bool) -> Vec<u8> {
     let bed_count: usize = if lfe { 1 } else { 0 };
     let object_count = bed_count + objects.len();
-    assert!(object_count >= 1 && object_count <= 159, "object_count out of range");
+    assert!(
+        object_count >= 1 && object_count <= 159,
+        "object_count out of range"
+    );
 
     let mut w = BitWriter::new();
     // object_audio_metadata_payload()
@@ -239,12 +250,19 @@ fn encode_object_element(objects: &[ObjectPos], bed_count: usize, object_count: 
     // object_data() for each object (single block, blk == 0). Objects [0, bed_count) are beds.
     for obj in 0..object_count {
         let is_bed = obj < bed_count;
-        let pos = if is_bed { None } else { objects.get(obj - bed_count).copied() };
+        let pos = if is_bed {
+            None
+        } else {
+            objects.get(obj - bed_count).copied()
+        };
         encode_object_info_block(&mut w, is_bed, pos);
     }
 
     let bit_len = w.bit_len();
-    Bits { bytes: w.into_bytes(), bit_len }
+    Bits {
+        bytes: w.into_bytes(),
+        bit_len,
+    }
 }
 
 fn encode_object_info_block(w: &mut BitWriter, is_bed: bool, pos: Option<ObjectPos>) {
@@ -259,7 +277,11 @@ fn encode_object_info_block(w: &mut BitWriter, is_bed: bool, pos: Option<ObjectP
     if !is_bed {
         // blk == 0, not bed ⇒ object_render_info_status_idx = 0b01 ⇒ object_render_info()
         //   obj_render_info[] = {true, true, true, true}
-        let p = pos.unwrap_or(ObjectPos { x: 0.0, y: 0.0, z: 0.0 });
+        let p = pos.unwrap_or(ObjectPos {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        });
         let (px, py, zsign, pz) = quantize_pos(p);
         // obj_render_info[0]: position (blk==0 ⇒ no differential bit)
         w.write(px, 6); // pos3D_X_bits
@@ -418,7 +440,12 @@ fn write_protection_bits(b: &mut BitWriter, val: u128, n: u32) {
 /// values mandated by ETSI TS 103 420 §8.2 Table 56 (duratione=0, groupide=1, codecdatae=0,
 /// discard_unknown=0, frame-aligned, priority/proc_allowed=0). Returns whole bytes starting 0x58 0x38.
 pub fn wrap_emdf(payloads: &[(u8, Vec<u8>)]) -> Vec<u8> {
-    let prot = active_protector();
+    wrap_emdf_with(payloads, active_protector())
+}
+
+/// Like [`wrap_emdf`], but with an explicit protector — used by tests and as a library entry point
+/// so a caller can sign with any [`EmdfProtector`] without touching the process-global one.
+pub fn wrap_emdf_with(payloads: &[(u8, Vec<u8>)], prot: &dyn EmdfProtector) -> Vec<u8> {
     // Body after the 16-bit length field.
     let mut b = BitWriter::new();
     b.write(0, 2); // emdf_version = 0
@@ -744,7 +771,11 @@ fn decode_oamd(r: &mut BitReader) -> DecodedOamd {
         r.pos = elem_end;
     }
 
-    DecodedOamd { object_count, bed_count, objects }
+    DecodedOamd {
+        object_count,
+        bed_count,
+        objects,
+    }
 }
 
 fn decode_object_info_block(r: &mut BitReader, blk: usize, is_bed: bool) -> Option<DecodedObject> {
@@ -778,7 +809,11 @@ fn decode_object_info_block(r: &mut BitReader, blk: usize, is_bed: bool) -> Opti
     };
     let mut decoded = None;
     if render_status == 1 || render_status == 3 {
-        let info = if render_status == 1 { 0b1111 } else { r.read(4) };
+        let info = if render_status == 1 {
+            0b1111
+        } else {
+            r.read(4)
+        };
         if info & 1 != 0 {
             let differential = blk != 0 && r.read_bit();
             let (px, py, pz);
@@ -825,7 +860,16 @@ fn decode_object_info_block(r: &mut BitReader, blk: usize, is_bed: bool) -> Opti
         let n = r.read(4) + 1;
         r.read(n * 8);
     }
-    decoded.or(if is_bed { Some(DecodedObject { px: 0, py: 0, pz: 0, is_bed: true }) } else { None })
+    decoded.or(if is_bed {
+        Some(DecodedObject {
+            px: 0,
+            py: 0,
+            pz: 0,
+            is_bed: true,
+        })
+    } else {
+        None
+    })
 }
 
 /// Verbose field-by-field dump of a raw OAMD payload (starting at oa_md_version). Mirrors
@@ -846,7 +890,10 @@ pub fn dump_oamd_verbose(payload: &[u8]) {
     let element_count = r.read(4);
     println!(
         "OAMD ({} B): version={ver} object_count={object_count} dyn_only={} lfe={} alt={} elements={element_count}",
-        payload.len(), b_dyn as u8, lfe as u8, alt as u8
+        payload.len(),
+        b_dyn as u8,
+        lfe as u8,
+        alt as u8
     );
     for e in 0..element_count {
         let elem_id = r.read(4);
@@ -857,7 +904,8 @@ pub fn dump_oamd_verbose(payload: &[u8]) {
         let num_blocks = r.read(3) as usize + 1;
         println!(
             "  elem[{e}]: id={elem_id} size_bits={} discard={} sample_offset_code={soc} num_blocks={num_blocks}",
-            size + 1, discard as u8
+            size + 1,
+            discard as u8
         );
         for blk in 0..num_blocks {
             let bof = r.read(6);
@@ -885,7 +933,11 @@ pub fn dump_oamd_verbose(payload: &[u8]) {
         let pad = elem_end.saturating_sub(used_end);
         println!(
             "    [parse used to bit {used_end}; elem_end={elem_end} (pad {pad}); payload_bits={payload_bits}] {}",
-            if used_end == elem_end { "CLEAN" } else { "MISALIGNED vs our model" }
+            if used_end == elem_end {
+                "CLEAN"
+            } else {
+                "MISALIGNED vs our model"
+            }
         );
         r.pos = elem_end;
     }
@@ -909,10 +961,18 @@ fn dump_object_info_block(r: &mut BitReader, blk: usize, is_bed: bool, obj: usiz
         let info = if basic_status == 1 { 0b11 } else { r.read(2) };
         if info & 0b10 != 0 {
             let g = r.read(2);
-            gain_s = if g == 0b10 { format!("{g}(g6={})", r.read(6)) } else { format!("{g}") };
+            gain_s = if g == 0b10 {
+                format!("{g}(g6={})", r.read(6))
+            } else {
+                format!("{g}")
+            };
         }
         if info & 0b01 != 0 {
-            prio_s = if r.read_bit() { "default".into() } else { format!("{}", r.read(5)) };
+            prio_s = if r.read_bit() {
+                "default".into()
+            } else {
+                format!("{}", r.read(5))
+            };
         }
     }
     let render_status = if !is_bed {
@@ -922,7 +982,11 @@ fn dump_object_info_block(r: &mut BitReader, blk: usize, is_bed: bool, obj: usiz
     };
     let mut render_s = "none".to_string();
     if render_status == 1 || render_status == 3 {
-        let info = if render_status == 1 { 0b1111 } else { r.read(4) };
+        let info = if render_status == 1 {
+            0b1111
+        } else {
+            r.read(4)
+        };
         let mut parts: Vec<String> = Vec::new();
         if info & 1 != 0 {
             let differential = blk != 0 && r.read_bit();
@@ -934,10 +998,16 @@ fn dump_object_info_block(r: &mut BitReader, blk: usize, is_bed: bool, obj: usiz
                 let x = px as f32 / 62.0 * 2.0 - 1.0;
                 let y = 1.0 - py as f32 / 62.0 * 2.0;
                 let z = pz as f32 / 15.0;
-                parts.push(format!("pos px={px} py={py} zsign={sign} pz={pz} (x={x:.2} y={y:.2} z={z:.2})"));
+                parts.push(format!(
+                    "pos px={px} py={py} zsign={sign} pz={pz} (x={x:.2} y={y:.2} z={z:.2})"
+                ));
             }
             if r.read_bit() {
-                parts.push(if r.read_bit() { "dist=inf".into() } else { format!("dist={}", r.read(4)) });
+                parts.push(if r.read_bit() {
+                    "dist=inf".into()
+                } else {
+                    format!("dist={}", r.read(4))
+                });
             } else {
                 parts.push("dist=0".into());
             }
@@ -969,7 +1039,9 @@ fn dump_object_info_block(r: &mut BitReader, blk: usize, is_bed: bool, obj: usiz
         r.read(n * 8);
         add_s = format!(" +addtbl({n}B)");
     }
-    println!("    obj {obj:2}{tag}: active=1 gain_idx={gain_s} prio={prio_s} render[{render_s}]{add_s}");
+    println!(
+        "    obj {obj:2}{tag}: active=1 gain_idx={gain_s} prio={prio_s} render[{render_s}]{add_s}"
+    );
 }
 
 /// Check whether OUR emdf_protection CRC algorithm reproduces the protection bits embedded in a
@@ -1043,7 +1115,11 @@ pub fn verify_emdf_protection(buf: &[u8]) -> Option<String> {
     }
     let (snap_p, _) = wp.snapshot();
     let our_prim = crc32_bits(&snap_p, n_prim);
-    let stored_prim = if prim_bits <= 32 { r.read(prim_bits) } else { r.read(32) };
+    let stored_prim = if prim_bits <= 32 {
+        r.read(prim_bits)
+    } else {
+        r.read(32)
+    };
     // OUR secondary CRC8 covers body bits [version .. end of primary].
     let n_sec = protection_start + prim_bits as usize - body_start;
     let mut ws = BitWriter::new();
@@ -1052,21 +1128,35 @@ pub fn verify_emdf_protection(buf: &[u8]) -> Option<String> {
     }
     let (snap_s, _) = ws.snapshot();
     let our_sec = crc8_bits(&snap_s, n_sec) as u32;
-    let stored_sec = if sec_bits <= 8 { r.read(sec_bits) } else { r.read(8) };
+    let stored_sec = if sec_bits <= 8 {
+        r.read(sec_bits)
+    } else {
+        r.read(8)
+    };
     // Machine-readable line for offline brute-forcing: emit the ENTIRE EMDF container (from sync,
     // MSB-first byte-packed) plus the bit positions, so any sub-region can be tried as the CRC input.
     let total_bits = protection_start + prim_bits as usize + sec_bits as usize;
     let nbytes = total_bits.div_ceil(8);
     let hex_full: String = buf[start..start + nbytes.min(buf.len() - start)]
-        .iter().map(|b| format!("{b:02x}")).collect();
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     Some(format!(
         "prot_len: primary={prim_bits} bits, secondary={sec_bits} bits\n  \
          primary  : stored=0x{stored_prim:08x}  ours=0x{our_prim:08x}  {}\n  \
          secondary: stored=0x{stored_sec:02x}        ours=0x{our_sec:02x}        {}\n  \
          FULL body_start=32 prot_start={protection_start} prim_bits={prim_bits} sec_bits={sec_bits} \
          prim=0x{stored_prim:08x} sec=0x{stored_sec:02x} hex={hex_full}",
-        if our_prim == stored_prim { "MATCH ✓" } else { "MISMATCH ✗ — our CRC algo ≠ Dolby's" },
-        if our_sec == stored_sec { "MATCH ✓" } else { "MISMATCH ✗ — our CRC algo ≠ Dolby's" },
+        if our_prim == stored_prim {
+            "MATCH ✓"
+        } else {
+            "MISMATCH ✗ — our CRC algo ≠ Dolby's"
+        },
+        if our_sec == stored_sec {
+            "MATCH ✓"
+        } else {
+            "MISMATCH ✗ — our CRC algo ≠ Dolby's"
+        },
     ))
 }
 
@@ -1081,8 +1171,18 @@ mod tests {
 
     #[test]
     fn variable_bits_roundtrip() {
-        for &(v, n) in &[(0u32, 4), (15, 4), (16, 4), (271, 4), (272, 4), (407, 4), (4367, 4),
-            (0, 8), (255, 8), (3, 2)] {
+        for &(v, n) in &[
+            (0u32, 4),
+            (15, 4),
+            (16, 4),
+            (271, 4),
+            (272, 4),
+            (407, 4),
+            (4367, 4),
+            (0, 8),
+            (255, 8),
+            (3, 2),
+        ] {
             let mut w = BitWriter::new();
             w.write_var(v, n);
             let total = w.bit_len();
@@ -1100,7 +1200,11 @@ mod tests {
         let objs: Vec<ObjectPos> = (0..13)
             .map(|i| {
                 let t = i as f32 / 12.0;
-                ObjectPos { x: t * 2.0 - 1.0, y: 1.0 - t * 2.0, z: t }
+                ObjectPos {
+                    x: t * 2.0 - 1.0,
+                    y: 1.0 - t * 2.0,
+                    z: t,
+                }
             })
             .collect();
         let emdf = encode_frame_emdf(&objs, true);
@@ -1117,5 +1221,114 @@ mod tests {
             let (px, py, _s, pz) = quantize_pos(objs[i]);
             assert_eq!((o.px, o.py, o.pz), (px, py, pz), "object {i} position");
         }
+    }
+
+    #[test]
+    fn keyed_protector_changes_signature_not_payload() {
+        let objs = vec![
+            ObjectPos {
+                x: -0.5,
+                y: 0.3,
+                z: 0.7,
+            },
+            ObjectPos {
+                x: 0.8,
+                y: -0.2,
+                z: 0.1,
+            },
+        ];
+        let payloads = vec![(PAYLOAD_OAMD, encode_oamd(&objs, true))];
+
+        let default_emdf = wrap_emdf_with(&payloads, &PublicCrcProtector);
+        let keyed_emdf = wrap_emdf_with(
+            &payloads,
+            &KeyedProtector {
+                key: b"secret-key".to_vec(),
+                key_id: 3,
+            },
+        );
+
+        // The signature differs between the two protectors...
+        assert_ne!(
+            default_emdf, keyed_emdf,
+            "keyed protector must change the emitted bytes"
+        );
+        // ...but the carried OAMD is byte-for-byte equivalent (only protection + key_id changed).
+        let a = decode_emdf_oamd(&default_emdf).expect("decode default");
+        let b = decode_emdf_oamd(&keyed_emdf).expect("decode keyed");
+        assert_eq!(
+            a.object_count, b.object_count,
+            "object_count unchanged by signing"
+        );
+        assert_eq!(a.objects, b.objects, "object metadata unchanged by signing");
+    }
+
+    #[test]
+    fn keyed_protector_is_deterministic_and_key_sensitive() {
+        let payloads = vec![(
+            PAYLOAD_OAMD,
+            encode_oamd(
+                &[ObjectPos {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 0.5,
+                }],
+                true,
+            ),
+        )];
+        let k1a = wrap_emdf_with(
+            &payloads,
+            &KeyedProtector {
+                key: vec![1, 2, 3, 4],
+                key_id: 0,
+            },
+        );
+        let k1b = wrap_emdf_with(
+            &payloads,
+            &KeyedProtector {
+                key: vec![1, 2, 3, 4],
+                key_id: 0,
+            },
+        );
+        let k2 = wrap_emdf_with(
+            &payloads,
+            &KeyedProtector {
+                key: vec![9, 9, 9, 9],
+                key_id: 0,
+            },
+        );
+        assert_eq!(k1a, k1b, "same key → deterministic output");
+        assert_ne!(k1a, k2, "different key → different signature");
+    }
+
+    #[test]
+    fn public_crc_protection_is_self_consistent() {
+        // Wrap with the public CRC, then verify_emdf_protection (which recomputes the same CRCs)
+        // must report a match for both primary and secondary.
+        let payloads = vec![(
+            PAYLOAD_OAMD,
+            encode_oamd(
+                &[ObjectPos {
+                    x: 0.2,
+                    y: 0.2,
+                    z: 0.2,
+                }],
+                true,
+            ),
+        )];
+        let emdf = wrap_emdf_with(&payloads, &PublicCrcProtector);
+        let report = verify_emdf_protection(&emdf).expect("verify");
+        assert!(
+            !report.contains("MISMATCH"),
+            "public CRC must be self-consistent:\n{report}"
+        );
+    }
+
+    #[test]
+    fn default_protection_length_codes_match_dolby_layout() {
+        // Real Dolby DD+ JOC uses a 32-bit primary + 8-bit secondary; that is our default.
+        let (pc, sc) = PublicCrcProtector.length_codes();
+        assert_eq!(PROT_LEN[pc as usize], 32);
+        assert_eq!(PROT_LEN[sc as usize], 8);
     }
 }

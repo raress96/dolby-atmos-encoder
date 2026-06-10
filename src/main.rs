@@ -1,8 +1,22 @@
-//! damf2joc — convert a Dolby Atmos Master (DAMF, as produced by `truehdd decode`)
-//! into E-AC-3 with Joint Object Coding (Dolby Digital Plus + Atmos).
+//! dolby-atmos-encoder — convert a Dolby Atmos Master (DAMF, as produced by `truehdd decode`)
+//! into E-AC-3 with Joint Object Coding (Dolby Digital Plus + Atmos). See README.md for the
+//! architecture, the two hardware walls, and the full toolchain.
 //!
-//! This is an in-progress reimplementation of the relevant part of Dolby's Encoding
-//! Engine. See ../convert-poc/DESIGN.md for the architecture and staged plan.
+//! Several modules carry diagnostic/probe subcommands and spec tables kept for completeness, and
+//! the `eac3*`/`joc` modules are bit-exact codec ports whose deliberately-explicit bit math trips a
+//! handful of clippy style lints. Both are allowed crate-wide rather than obscure the spec-faithful
+//! form or the diagnostic scaffolding.
+#![allow(
+    dead_code,
+    unused_assignments,
+    clippy::collapsible_if,
+    clippy::identity_op,
+    clippy::int_plus_one,
+    clippy::manual_is_multiple_of,
+    clippy::manual_range_contains,
+    clippy::needless_range_loop,
+    clippy::unnecessary_cast
+)]
 
 mod damf;
 mod eac3;
@@ -154,7 +168,7 @@ enum Command {
     },
 }
 
-/// Parse a `--emdf-key` value: raw hex, or `@path` to a file of hex (whitespace / `0x` ignored).
+/// Parse a `--emdf-key` value: raw hex, or `@path` to a file of hex (whitespace ignored).
 fn parse_emdf_key(s: &str) -> Result<Vec<u8>> {
     let text = match s.strip_prefix('@') {
         Some(path) => {
@@ -163,11 +177,34 @@ fn parse_emdf_key(s: &str) -> Result<Vec<u8>> {
         None => s.to_string(),
     };
     let hex: String = text.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-    anyhow::ensure!(!hex.is_empty() && hex.len() % 2 == 0, "key must be non-empty, even-length hex");
+    anyhow::ensure!(
+        !hex.is_empty() && hex.len() % 2 == 0,
+        "key must be non-empty, even-length hex"
+    );
     (0..hex.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).map_err(Into::into))
         .collect()
+}
+
+#[cfg(test)]
+mod key_tests {
+    use super::parse_emdf_key;
+
+    #[test]
+    fn parses_plain_hex() {
+        assert_eq!(parse_emdf_key("00 ff 10").unwrap(), vec![0x00, 0xff, 0x10]);
+        assert_eq!(
+            parse_emdf_key("deadbeef").unwrap(),
+            vec![0xde, 0xad, 0xbe, 0xef]
+        );
+    }
+
+    #[test]
+    fn rejects_empty_or_odd_length() {
+        assert!(parse_emdf_key("").is_err());
+        assert!(parse_emdf_key("abc").is_err());
+    }
 }
 
 fn main() -> Result<()> {
@@ -182,19 +219,35 @@ fn main() -> Result<()> {
             cli.emdf_key_id,
             key.len()
         );
-        emdf::set_protector(Box::new(emdf::KeyedProtector { key, key_id: cli.emdf_key_id }));
+        emdf::set_protector(Box::new(emdf::KeyedProtector {
+            key,
+            key_id: cli.emdf_key_id,
+        }));
     }
     match cli.command {
         Command::Inspect { atmos } => inspect(&atmos),
-        Command::Downmix { atmos, out, gain_db } => render::downmix(&atmos, &out, gain_db),
+        Command::Downmix {
+            atmos,
+            out,
+            gain_db,
+        } => render::downmix(&atmos, &out, gain_db),
         Command::Eac3probe { input } => eac3probe(&input),
         Command::Eac3inject { input, out, marker } => eac3inject(&input, &out, &marker),
         Command::Oamd { core, atmos, out } => oamd_inject(&core, &atmos, &out),
         Command::Atmos { core, atmos, out } => atmos_inject(&core, &atmos, &out),
         Command::Jocprobe { input, frame } => jocprobe(&input, frame),
         Command::Walkprobe { input } => walkprobe(&input),
-        Command::Graft { core, reference, out } => graft(&core, &reference, &out),
-        Command::Coregraft { realcore, myatmos, out, complexity } => coregraft(&realcore, &myatmos, &out, complexity),
+        Command::Graft {
+            core,
+            reference,
+            out,
+        } => graft(&core, &reference, &out),
+        Command::Coregraft {
+            realcore,
+            myatmos,
+            out,
+            complexity,
+        } => coregraft(&realcore, &myatmos, &out, complexity),
         Command::Bsidump { input } => {
             let data = std::fs::read(&input)?;
             let frames = eac3::parse_frames(&data);
@@ -212,7 +265,11 @@ fn main() -> Result<()> {
         Command::Emdfverify { input } => {
             let data = std::fs::read(&input)?;
             let frames = eac3::parse_frames(&data);
-            anyhow::ensure!(!frames.is_empty(), "no E-AC-3 syncframes in {}", input.display());
+            anyhow::ensure!(
+                !frames.is_empty(),
+                "no E-AC-3 syncframes in {}",
+                input.display()
+            );
             let mut checked = 0usize;
             for f in &frames {
                 let frame = &data[f.offset..f.offset + f.size];
@@ -315,9 +372,19 @@ fn jocprobe(input: &Path, detail_frame: usize) -> Result<()> {
                 if detail {
                     println!(
                         "\n  JOC: dmx_config={} ({}ch core), {} objects, gain={}*2^({}-4)/32+1, seq={}",
-                        jf.dmx_config, jf.channel_count, jf.object_count, jf.gain_frac, jf.gain_pow, jf.seq
+                        jf.dmx_config,
+                        jf.channel_count,
+                        jf.object_count,
+                        jf.gain_frac,
+                        jf.gain_pow,
+                        jf.seq
                     );
-                    println!("  bits used {} / {} ({} B payload)", jf.bits_used, payload.len() * 8, payload.len());
+                    println!(
+                        "  bits used {} / {} ({} B payload)",
+                        jf.bits_used,
+                        payload.len() * 8,
+                        payload.len()
+                    );
                     for (o, obj) in jf.objects.iter().enumerate() {
                         if !obj.active {
                             println!("  obj {o:2}: inactive");
@@ -325,8 +392,12 @@ fn jocprobe(input: &Path, detail_frame: usize) -> Result<()> {
                         }
                         println!(
                             "  obj {o:2}: bands={:2} sparse={} quant={} steep={} dp={} offs={:?}",
-                            obj.bands, obj.sparse as u8, obj.quant, obj.steep_slope as u8,
-                            obj.data_points, &obj.timeslot_offsets[..obj.data_points]
+                            obj.bands,
+                            obj.sparse as u8,
+                            obj.quant,
+                            obj.steep_slope as u8,
+                            obj.data_points,
+                            &obj.timeslot_offsets[..obj.data_points]
                         );
                         if obj.sparse {
                             for dp in 0..obj.data_points {
@@ -351,10 +422,18 @@ fn jocprobe(input: &Path, detail_frame: usize) -> Result<()> {
         }
     }
 
-    println!("\nEMDF found in {emdf_found}/{} frames; JOC decoded OK in {joc_ok}", frames.len());
+    println!(
+        "\nEMDF found in {emdf_found}/{} frames; JOC decoded OK in {joc_ok}",
+        frames.len()
+    );
     if !seqs.is_empty() {
         let monotonic = seqs.windows(2).all(|w| w[1] == (w[0] + 1) % 1024);
-        println!("seq counter: first={} last={} monotonic(mod 1024)={}", seqs[0], seqs[seqs.len() - 1], monotonic);
+        println!(
+            "seq counter: first={} last={} monotonic(mod 1024)={}",
+            seqs[0],
+            seqs[seqs.len() - 1],
+            monotonic
+        );
     }
     for (idx, e) in &joc_err {
         println!("JOC decode error at frame {idx}: {e}");
@@ -376,7 +455,10 @@ struct AtmosCtx {
 fn load_ctx(core: &Path, atmos: &Path) -> Result<AtmosCtx> {
     let manifest = damf::Manifest::load(atmos)?;
     let dir = atmos.parent().unwrap_or_else(|| Path::new("."));
-    let pres = manifest.presentations.first().context("manifest has no presentations")?;
+    let pres = manifest
+        .presentations
+        .first()
+        .context("manifest has no presentations")?;
 
     // MVP: the dynamic-object-only OAMD program supports only an LFE bed.
     let mut bed_channels = 0usize;
@@ -412,13 +494,19 @@ fn load_ctx(core: &Path, atmos: &Path) -> Result<AtmosCtx> {
     let timelines: Vec<PosTimeline> = pres
         .objects
         .iter()
-        .map(|o| PosTimeline { keys: keys.get(&o.id).cloned().unwrap_or_default() })
+        .map(|o| PosTimeline {
+            keys: keys.get(&o.id).cloned().unwrap_or_default(),
+        })
         .collect();
     let nobj = timelines.len();
 
     let data = std::fs::read(core).with_context(|| format!("reading {}", core.display()))?;
     let frames = eac3::parse_frames(&data);
-    anyhow::ensure!(!frames.is_empty(), "no E-AC-3 syncframes in {}", core.display());
+    anyhow::ensure!(
+        !frames.is_empty(),
+        "no E-AC-3 syncframes in {}",
+        core.display()
+    );
     let mut start_samples = Vec::with_capacity(frames.len());
     let mut acc = 0u64;
     for f in &frames {
@@ -432,9 +520,16 @@ fn load_ctx(core: &Path, atmos: &Path) -> Result<AtmosCtx> {
     // after the single LFE bed channel), binned to the core's frame grid for the JOC analysis.
     let caf_path = dir.join(&pres.audio);
     let caf = damf::read_caf_info(&caf_path)?;
-    anyhow::ensure!(caf.bits_per_channel == 24 && !caf.is_float(), "expected 24-bit int CAF essence");
+    anyhow::ensure!(
+        caf.bits_per_channel == 24 && !caf.is_float(),
+        "expected 24-bit int CAF essence"
+    );
     let channels = caf.channels as usize;
-    anyhow::ensure!(channels >= 1 + nobj, "CAF has {channels} channels, need {}", 1 + nobj);
+    anyhow::ensure!(
+        channels >= 1 + nobj,
+        "CAF has {channels} channels, need {}",
+        1 + nobj
+    );
     let mut powers = vec![vec![0f32; nobj]; frames.len()];
     {
         use std::io::{Read, Seek, SeekFrom};
@@ -474,7 +569,14 @@ fn load_ctx(core: &Path, atmos: &Path) -> Result<AtmosCtx> {
         }
     }
 
-    Ok(AtmosCtx { timelines, nobj, data, frames, start_samples, powers })
+    Ok(AtmosCtx {
+        timelines,
+        nobj,
+        data,
+        frames,
+        start_samples,
+        powers,
+    })
 }
 
 /// Per-object 5.1-mains downmix gains at the frame midpoint — the same VBAP pan the `downmix`
@@ -499,7 +601,11 @@ fn frame_objects(ctx: &AtmosCtx, i: usize) -> Vec<emdf::ObjectPos> {
         .iter()
         .map(|tl| {
             let p = tl.at(t);
-            emdf::ObjectPos { x: p[0], y: p[1], z: p[2] }
+            emdf::ObjectPos {
+                x: p[0],
+                y: p[1],
+                z: p[2],
+            }
         })
         .collect()
 }
@@ -576,11 +682,15 @@ fn atmos_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
     let grew = out_buf.len() as i64 - ctx.data.len() as i64;
     println!(
         "Atmos inject: addbsi flag (complexity={complexity}) + OAMD ({} dyn + 1 LFE) + JOC ({} obj, avg {} B EMDF/frame) → {} frames",
-        ctx.nobj, ctx.nobj, emdf_bytes / ctx.frames.len(), outframes.len()
+        ctx.nobj,
+        ctx.nobj,
+        emdf_bytes / ctx.frames.len(),
+        outframes.len()
     );
     println!(
         "  carriage: skip-field {}/{} frames (rest fell back to auxdata)",
-        skipfield_frames, ctx.frames.len()
+        skipfield_frames,
+        ctx.frames.len()
     );
     println!(
         "  size {} -> {} B (+{} B, +{:.1}%)",
@@ -601,7 +711,8 @@ fn atmos_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
 /// preserving its coupled audio. Patches addbsi complexity to 14 (my OAMD object_count) so it stays
 /// consistent with my metadata. If this plays Atmos on HW, the ffmpeg core was the wall.
 fn coregraft(realcore: &Path, myatmos: &Path, out: &Path, complexity: Option<u8>) -> Result<()> {
-    let real = std::fs::read(realcore).with_context(|| format!("reading {}", realcore.display()))?;
+    let real =
+        std::fs::read(realcore).with_context(|| format!("reading {}", realcore.display()))?;
     let my = std::fs::read(myatmos).with_context(|| format!("reading {}", myatmos.display()))?;
     let rframes = eac3::parse_frames(&real);
     let mframes = eac3::parse_frames(&my);
@@ -636,7 +747,14 @@ fn coregraft(realcore: &Path, myatmos: &Path, out: &Path, complexity: Option<u8>
             if my_len > mbuf.len() || my_len > native_len {
                 return None;
             }
-            eac3::splice_emdf_into_core(rframe, rf, emdf_bit, native_len, &mbuf[..my_len], complexity)
+            eac3::splice_emdf_into_core(
+                rframe,
+                rf,
+                emdf_bit,
+                native_len,
+                &mbuf[..my_len],
+                complexity,
+            )
         })();
         match done {
             Some(o) => {
@@ -650,7 +768,10 @@ fn coregraft(realcore: &Path, myatmos: &Path, out: &Path, complexity: Option<u8>
         }
     }
     std::fs::write(out, &out_buf).with_context(|| format!("writing {}", out.display()))?;
-    println!("coregraft: {spliced} spliced, {copied} copied-verbatim → {}", out.display());
+    println!(
+        "coregraft: {spliced} spliced, {copied} copied-verbatim → {}",
+        out.display()
+    );
     Ok(())
 }
 
@@ -659,7 +780,8 @@ fn coregraft(realcore: &Path, myatmos: &Path, out: &Path, complexity: Option<u8>
 /// metadata encoder; if it still fails, the bug is in my core/carriage/addbsi.
 fn graft(core: &Path, reference: &Path, out: &Path) -> Result<()> {
     let core_data = std::fs::read(core).with_context(|| format!("reading {}", core.display()))?;
-    let ref_data = std::fs::read(reference).with_context(|| format!("reading {}", reference.display()))?;
+    let ref_data =
+        std::fs::read(reference).with_context(|| format!("reading {}", reference.display()))?;
     let core_frames = eac3::parse_frames(&core_data);
     let ref_frames = eac3::parse_frames(&ref_data);
     anyhow::ensure!(!ref_frames.is_empty(), "no frames in reference");
@@ -671,7 +793,9 @@ fn graft(core: &Path, reference: &Path, out: &Path) -> Result<()> {
     let mut ref_addbsi: Vec<Vec<u8>> = Vec::new();
     for rf in &ref_frames {
         let rframe = &ref_data[rf.offset..rf.offset + rf.size];
-        let Some((_, aligned)) = joc::find_emdf_anywhere(rframe) else { continue };
+        let Some((_, aligned)) = joc::find_emdf_anywhere(rframe) else {
+            continue;
+        };
         let body_len = ((aligned[2] as usize) << 8) | aligned[3] as usize;
         // Guard against false 0x5838 matches: real EMDF fits one 9-bit skip field and must decode
         // to a JOC (id 14) payload.
@@ -685,7 +809,9 @@ fn graft(core: &Path, reference: &Path, out: &Path) -> Result<()> {
         if !has_joc {
             continue;
         }
-        let Some((_, addbsi)) = eac3::read_addbsi_raw(rframe, rf) else { continue };
+        let Some((_, addbsi)) = eac3::read_addbsi_raw(rframe, rf) else {
+            continue;
+        };
         ref_emdf.push(emdf);
         ref_addbsi.push(addbsi);
     }
@@ -693,7 +819,11 @@ fn graft(core: &Path, reference: &Path, out: &Path) -> Result<()> {
     println!(
         "reference: {} EMDF frames, addbsi [{}], EMDF size {}..{} B",
         ref_emdf.len(),
-        ref_addbsi[0].iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" "),
+        ref_addbsi[0]
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect::<Vec<_>>()
+            .join(" "),
         ref_emdf.iter().map(|e| e.len()).min().unwrap(),
         ref_emdf.iter().map(|e| e.len()).max().unwrap(),
     );
@@ -709,11 +839,22 @@ fn graft(core: &Path, reference: &Path, out: &Path) -> Result<()> {
                 ok += 1;
                 out_buf.extend_from_slice(&o);
             }
-            None => out_buf.extend_from_slice(&eac3::inject_frame_full(frame, f, addbsi, emdf, emdf.len() * 8)),
+            None => out_buf.extend_from_slice(&eac3::inject_frame_full(
+                frame,
+                f,
+                addbsi,
+                emdf,
+                emdf.len() * 8,
+            )),
         }
     }
     std::fs::write(out, &out_buf).with_context(|| format!("writing {}", out.display()))?;
-    println!("graft: {}/{} frames via skip-field → {}", ok, core_frames.len(), out.display());
+    println!(
+        "graft: {}/{} frames via skip-field → {}",
+        ok,
+        core_frames.len(),
+        out.display()
+    );
     Ok(())
 }
 
@@ -751,7 +892,10 @@ impl PosTimeline {
 fn oamd_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
     let manifest = damf::Manifest::load(atmos)?;
     let dir = atmos.parent().unwrap_or_else(|| Path::new("."));
-    let pres = manifest.presentations.first().context("manifest has no presentations")?;
+    let pres = manifest
+        .presentations
+        .first()
+        .context("manifest has no presentations")?;
 
     // MVP: the dynamic-object-only OAMD program supports only an LFE bed.
     let mut bed_channels = 0usize;
@@ -787,14 +931,20 @@ fn oamd_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
     let timelines: Vec<PosTimeline> = pres
         .objects
         .iter()
-        .map(|o| PosTimeline { keys: keys.get(&o.id).cloned().unwrap_or_default() })
+        .map(|o| PosTimeline {
+            keys: keys.get(&o.id).cloned().unwrap_or_default(),
+        })
         .collect();
     let nobj = timelines.len();
 
     // Load the core stream and map each frame to its start sample (advance on independent frames).
     let data = std::fs::read(core).with_context(|| format!("reading {}", core.display()))?;
     let frames = eac3::parse_frames(&data);
-    anyhow::ensure!(!frames.is_empty(), "no E-AC-3 syncframes in {}", core.display());
+    anyhow::ensure!(
+        !frames.is_empty(),
+        "no E-AC-3 syncframes in {}",
+        core.display()
+    );
     let mut start_samples = Vec::with_capacity(frames.len());
     let mut acc = 0u64;
     for f in &frames {
@@ -811,7 +961,11 @@ fn oamd_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
             .iter()
             .map(|tl| {
                 let p = tl.at(t);
-                emdf::ObjectPos { x: p[0], y: p[1], z: p[2] }
+                emdf::ObjectPos {
+                    x: p[0],
+                    y: p[1],
+                    z: p[2],
+                }
             })
             .collect();
         let payload = emdf::encode_frame_emdf(&objs, true);
@@ -847,7 +1001,10 @@ fn oamd_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
         grew,
         grew as f64 / data.len() as f64 * 100.0
     );
-    println!("  OAMD round-trip OK on {ok}/{checked} frames (object_count={}, bed=1)", nobj + 1);
+    println!(
+        "  OAMD round-trip OK on {ok}/{checked} frames (object_count={}, bed=1)",
+        nobj + 1
+    );
     println!("  wrote {}", out.display());
     println!("  validate core: ffmpeg -i {} -f null -", out.display());
     Ok(())
@@ -860,7 +1017,11 @@ fn eac3inject(input: &Path, out: &Path, marker: &str) -> Result<()> {
 
     let data = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
     let before = eac3::parse_frames(&data);
-    anyhow::ensure!(!before.is_empty(), "no E-AC-3 syncframes in {}", input.display());
+    anyhow::ensure!(
+        !before.is_empty(),
+        "no E-AC-3 syncframes in {}",
+        input.display()
+    );
 
     // Inject the marker into every frame.
     let injected = eac3::inject_stream(&data, |_f, _i| Some((payload.clone(), bits)));
@@ -882,12 +1043,21 @@ fn eac3inject(input: &Path, out: &Path, marker: &str) -> Result<()> {
             Some((got, got_bits)) if got_bits == bits && got[..payload.len()] == payload[..] => {
                 ok += 1
             }
-            other => anyhow::bail!("aux round-trip failed at frame off {}: {:?}", f.offset, other),
+            other => anyhow::bail!(
+                "aux round-trip failed at frame off {}: {:?}",
+                f.offset,
+                other
+            ),
         }
     }
 
     let grew = injected.len() as i64 - data.len() as i64;
-    println!("injected marker {} ({} B) into {} frames", marker, payload.len(), after.len());
+    println!(
+        "injected marker {} ({} B) into {} frames",
+        marker,
+        payload.len(),
+        after.len()
+    );
     println!(
         "  size {} -> {} B (+{} B, +{:.1}%)",
         data.len(),
@@ -904,7 +1074,10 @@ fn eac3inject(input: &Path, out: &Path, marker: &str) -> Result<()> {
 /// Parse a hex string (e.g. "DEADBEEF" or "de ad be ef") into bytes.
 fn hex_bytes(s: &str) -> Result<Vec<u8>> {
     let clean: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    anyhow::ensure!(clean.len() % 2 == 0, "hex string must have an even number of digits");
+    anyhow::ensure!(
+        clean.len() % 2 == 0,
+        "hex string must have an even number of digits"
+    );
     (0..clean.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).context("invalid hex digit"))
@@ -914,7 +1087,11 @@ fn hex_bytes(s: &str) -> Result<Vec<u8>> {
 fn eac3probe(input: &Path) -> Result<()> {
     let data = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
     let frames = eac3::parse_frames(&data);
-    anyhow::ensure!(!frames.is_empty(), "no E-AC-3 syncframes found in {}", input.display());
+    anyhow::ensure!(
+        !frames.is_empty(),
+        "no E-AC-3 syncframes found in {}",
+        input.display()
+    );
 
     let mut by_sub: BTreeMap<(u8, u8), usize> = BTreeMap::new();
     for f in &frames {
@@ -971,19 +1148,29 @@ fn eac3probe(input: &Path) -> Result<()> {
             f.offset,
             addbsi,
             raw.as_ref()
-                .map(|(n, b)| format!("{n}B [{}]", b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")))
+                .map(|(n, b)| format!(
+                    "{n}B [{}]",
+                    b.iter()
+                        .map(|x| format!("{x:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ))
                 .unwrap_or_else(|| "none".into()),
             emdf,
         );
         // Dump raw bytes of each EMDF payload (to inspect ids 1/2 companion payloads).
-        if let Some((_, b)) = joc::find_emdf_anywhere(frame) {
-            if let Some(ps) = emdf::extract_emdf_payloads(&b) {
-                for (id, bytes) in &ps {
-                    println!(
-                        "        payload id={id} [{}]",
-                        bytes.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")
-                    );
-                }
+        if let Some((_, b)) = joc::find_emdf_anywhere(frame)
+            && let Some(ps) = emdf::extract_emdf_payloads(&b)
+        {
+            for (id, bytes) in &ps {
+                println!(
+                    "        payload id={id} [{}]",
+                    bytes
+                        .iter()
+                        .map(|x| format!("{x:02x}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
             }
         }
     }

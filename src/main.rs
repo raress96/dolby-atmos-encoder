@@ -29,7 +29,6 @@ mod render;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -446,7 +445,8 @@ fn jocprobe(input: &Path, detail_frame: usize) -> Result<()> {
 struct AtmosCtx {
     timelines: Vec<PosTimeline>,
     nobj: usize,
-    data: Vec<u8>,
+    /// Core frame grid (header-only — the core *bytes* are never held; the inject pass re-streams
+    /// them). `frames[i]` lines up index-for-index with what `transform_frames_io` delivers.
     frames: Vec<eac3::FrameInfo>,
     start_samples: Vec<u64>,
     /// Per core frame, per dynamic object: mean-square signal power from the CAF essence.
@@ -501,8 +501,13 @@ fn load_ctx(core: &Path, atmos: &Path) -> Result<AtmosCtx> {
         .collect();
     let nobj = timelines.len();
 
-    let data = std::fs::read(core).with_context(|| format!("reading {}", core.display()))?;
-    let frames = eac3::parse_frames(&data);
+    // Build the core's frame grid by streaming the file (header-walk only): the ~790 MB of core
+    // bytes are never resident — atmos_inject re-streams them through transform_frames_io, so memory
+    // stays bounded by the read window regardless of the film's length.
+    let frames = eac3::parse_frames_io(std::io::BufReader::new(
+        std::fs::File::open(core).with_context(|| format!("reading {}", core.display()))?,
+    ))
+    .with_context(|| format!("scanning frames in {}", core.display()))?;
     anyhow::ensure!(
         !frames.is_empty(),
         "no E-AC-3 syncframes in {}",
@@ -573,7 +578,6 @@ fn load_ctx(core: &Path, atmos: &Path) -> Result<AtmosCtx> {
     Ok(AtmosCtx {
         timelines,
         nobj,
-        data,
         frames,
         start_samples,
         powers,
@@ -618,18 +622,19 @@ fn atmos_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
     // addbsi §8.3: reserved(7)=0 · flag_ec3_extension_type_a(1)=1 · complexity_index_type_a(8).
     let addbsi = [0x01u8, complexity];
 
-    // Stream each injected frame straight to the output (no doubled output buffer) and self-verify
-    // it inline (replacing the old whole-output re-parse pass).
-    let mut writer = std::io::BufWriter::new(
+    // Stream the core through transform_frames_io: only a bounded window is ever held, never the
+    // whole core. Frame `i` lines up with ctx.frames[i] / ctx.powers[i] because parse_frames_io (the
+    // grid builder) and transform_frames_io walk frames identically. Inject + self-verify inline.
+    let reader = std::io::BufReader::new(
+        std::fs::File::open(core).with_context(|| format!("reading {}", core.display()))?,
+    );
+    let writer = std::io::BufWriter::new(
         std::fs::File::create(out).with_context(|| format!("writing {}", out.display()))?,
     );
     let mut emdf_bytes = 0usize;
     let mut skipfield_frames = 0usize;
     let (mut flag_ok, mut oamd_ok, mut joc_ok) = (0usize, 0usize, 0usize);
-    let mut out_bytes = 0u64;
-    let nframes = ctx.frames.len();
-    for (i, f) in ctx.frames.iter().enumerate() {
-        let frame = &ctx.data[f.offset..f.offset + f.size];
+    let processed = eac3::transform_frames_io(reader, writer, |f, i, frame| {
         let objs = frame_objects(&ctx, i);
         let oamd = emdf::encode_oamd(&objs, true);
         let dmx = frame_downmix_gains(&ctx, i);
@@ -682,18 +687,16 @@ fn atmos_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
                 }
             }
         }
-        out_bytes += injected.len() as u64;
-        writer
-            .write_all(&injected)
-            .with_context(|| format!("writing {}", out.display()))?;
-    }
-    writer
-        .flush()
-        .with_context(|| format!("flushing {}", out.display()))?;
-    drop(writer);
+        injected
+    })
+    .with_context(|| format!("streaming {} -> {}", core.display(), out.display()))?;
 
+    let nframes = ctx.frames.len();
+    debug_assert_eq!(processed, nframes, "streamed frame count must match the grid");
     let checked = nframes;
-    let grew = out_bytes as i64 - ctx.data.len() as i64;
+    let in_sz = std::fs::metadata(core)?.len();
+    let out_sz = std::fs::metadata(out)?.len();
+    let grew = out_sz as i64 - in_sz as i64;
     println!(
         "Atmos inject: addbsi flag (complexity={complexity}) + OAMD ({} dyn + 1 LFE) + JOC ({} obj, avg {} B EMDF/frame) → {} frames",
         ctx.nobj,
@@ -707,10 +710,10 @@ fn atmos_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
     );
     println!(
         "  size {} -> {} B (+{} B, +{:.1}%)",
-        ctx.data.len(),
-        out_bytes,
+        in_sz,
+        out_sz,
         grew,
-        grew as f64 / ctx.data.len() as f64 * 100.0
+        grew as f64 / in_sz as f64 * 100.0
     );
     println!(
         "  addbsi flag OK on {flag_ok}/{checked} frames; OAMD round-trip on {oamd_ok}/{checked}; JOC round-trip on {joc_ok}/{checked}"

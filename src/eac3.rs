@@ -52,7 +52,7 @@ impl<'a> BitReader<'a> {
 }
 
 /// Parsed header of one E-AC-3 syncframe (only the fields we need to walk + classify frames).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FrameInfo {
     /// Byte offset of the syncword in the stream.
     pub offset: usize,
@@ -1143,6 +1143,88 @@ where
     Ok(frame_idx)
 }
 
+/// Stream `reader` and return the [`FrameInfo`] of every complete syncframe **without retaining the
+/// frame bytes** — the grid-building counterpart to [`transform_frames_io`]. It walks frames with the
+/// identical logic (same resync, same "a truncated trailing frame is not a frame"), so the frame at
+/// index `i` here is exactly the frame `transform_frames_io` delivers at index `i`; the two are a
+/// matched pair and must stay in lockstep. Only a bounded ~4 MiB window is held, so the frame table
+/// for an arbitrarily large core is built in O(1) memory. Offsets are absolute stream positions, so
+/// on a well-formed stream the result equals [`parse_frames`] (see the test).
+pub fn parse_frames_io<R: Read>(reader: R) -> io::Result<Vec<FrameInfo>> {
+    parse_frames_io_chunked(reader, 1 << 22)
+}
+
+fn parse_frames_io_chunked<R: Read>(mut reader: R, chunk: usize) -> io::Result<Vec<FrameInfo>> {
+    let chunk = chunk.max(8);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut eof = false;
+    let mut base = 0usize; // absolute stream offset of buf[0]
+    let mut frames = Vec::new();
+
+    while !eof || !buf.is_empty() {
+        if !eof {
+            let start = buf.len();
+            buf.resize(start + chunk, 0);
+            let mut filled = start;
+            while filled < buf.len() {
+                match reader.read(&mut buf[filled..])? {
+                    0 => {
+                        eof = true;
+                        break;
+                    }
+                    n => filled += n,
+                }
+            }
+            buf.truncate(filled);
+        }
+
+        // Record every complete frame the buffer currently holds (mirrors the emit loop in
+        // transform_frames_io_chunked, minus the writes).
+        let mut pos = 0usize;
+        loop {
+            if pos + 2 > buf.len() {
+                break;
+            }
+            if buf[pos..pos + 2] != SYNCWORD {
+                match find_sync(&buf, pos) {
+                    Some(p) => {
+                        pos = p;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            if pos + 6 > buf.len() {
+                break; // need the header to learn the size
+            }
+            let mut info = read_frame_header(&buf, pos);
+            let size = info.size;
+            if size == 0 {
+                match find_sync(&buf, pos + 1) {
+                    Some(p) => {
+                        pos = p;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            if pos + size > buf.len() {
+                break; // frame not fully buffered yet
+            }
+            info.offset = base + pos; // absolute (matches parse_frames)
+            frames.push(info);
+            pos += size;
+        }
+
+        // Keep an unfinished trailing frame for the next chunk; at EOF it is incomplete -> dropped.
+        let drop = if eof { buf.len() } else { pos };
+        base += drop;
+        buf.drain(..drop);
+    }
+
+    Ok(frames)
+}
+
 #[cfg(test)]
 mod stream_tests {
     use super::*;
@@ -1238,5 +1320,24 @@ mod stream_tests {
         let mut got = Vec::new();
         transform_frames_io_chunked(Cursor::new(&data), &mut got, 5, |_i, _n, f| grow(f)).unwrap();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn parse_frames_io_matches_parse_frames() {
+        // The streamed grid-builder must reproduce parse_frames exactly — same frames, same fields,
+        // same absolute offsets — at any chunk size, including chunks that split frames and resync
+        // gaps across reads. This is what guarantees `frames[i]` lines up with the frame
+        // `transform_frames_io` delivers at index `i` in the streamed `atmos` path.
+        let mut data = vec![0x09]; // leading gap byte
+        data.extend_from_slice(&synth_frame(8, 0xAA));
+        data.extend_from_slice(&[0x11, 0x22]); // mid gap
+        data.extend_from_slice(&synth_frame(32, 0xCC));
+        data.extend_from_slice(&synth_frame(6, 0xBB));
+        let want = parse_frames(&data);
+        assert_eq!(want.len(), 3, "fixture should parse to 3 frames");
+        for &chunk in &[8usize, 7, 13, 64, 1024] {
+            let got = parse_frames_io_chunked(Cursor::new(&data), chunk).unwrap();
+            assert_eq!(got, want, "parse_frames_io must match parse_frames (chunk={chunk})");
+        }
     }
 }

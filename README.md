@@ -172,12 +172,15 @@ Run end-to-end on a full feature film — a *Logan* (2017) 2160p UHD Blu-ray rem
 | Output | 809 MB `atmos.eac3` |
 | **Cavern** | `HasObjects=True`, **13 objects**, 1 bed instance, 5-channel JOC downmix |
 
-**Memory is bounded by frame size, not file size.** The streaming frame-I/O path
-(`eac3::transform_frames_io`, ~4 MiB rolling buffer) holds a fixed working set regardless of length:
-a 1.25 GB synthetic core (487,424 frames) through `eac3inject` peaks at **7.9 MB RSS**. The `atmos`
-subcommand is the one exception — it loads the input core once for JOC context, so on the 791 MB
-Logan core it peaked at **815 MB RSS** (≈ core size; the *output* is still streamed). Output is
-byte-identical before and after the streaming refactor (golden SHA-256 verified).
+**Memory is bounded by frame count, not file size.** Every subcommand streams the core through
+`eac3::transform_frames_io` (~4 MiB rolling buffer), so the working set is fixed regardless of length:
+that same 791 MB Logan core runs `eac3inject` at **7.9 MB peak RSS** (a 1.25 GB synthetic core,
+487,424 frames, also holds ~7.9 MB). `atmos` builds its JOC context from a streamed header-only scan
+(`eac3::parse_frames_io`) of the core plus a streaming pass over the CAF essence — both *O(number of
+frames)*, never the core bytes — then streams the input core and output through the same path. So it
+no longer holds the core in RAM: an earlier build peaked at **815 MB** on Logan (it loaded the whole
+core); it now stays in the tens of MB (≈ the 7.9 MB streaming floor plus the per-frame position/power
+tables). Output is byte-identical across this refactor (golden SHA-256 verified).
 
 > These are *decoder-side* results: ffmpeg and Cavern both accept the stream as object Atmos. It
 > still will **not** engage Atmos on Dolby-certified hardware — see below for why.

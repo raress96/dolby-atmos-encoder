@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AssemblyName>cavernprobe</AssemblyName>
+    <RootNamespace>cavernprobe</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Reference the Cavern decoder (https://github.com/VoidXH/Cavern). Clone Cavern and point this
+      ProjectReference at its Cavern.Format/Cavern.Format.csproj. The relative path below assumes the
+      layout used in this research tree (convert-poc/research/Cavern); adjust it to wherever you
+      cloned Cavern. (Alternatively, replace it with a NuGet <PackageReference> for Cavern.Format.)
+    -->
+    <ProjectReference Include="../../../research/Cavern/Cavern.Format/Cavern.Format.csproj" />
+  </ItemGroup>
+
+</Project>

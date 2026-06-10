@@ -1,2 +1,6 @@
 /target
 **/*.rs.bk
+
+# .NET build output (tools/cavernprobe)
+**/bin/
+**/obj/

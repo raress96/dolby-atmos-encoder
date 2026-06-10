@@ -51,23 +51,63 @@ cargo build --release
 `truehdd` produces. The only out-of-the-ordinary deps are `hmac`/`sha2`, used by the EMDF signing
 seam.)
 
-## Use
+## Test files / samples
+
+You need a source that actually contains **Dolby TrueHD + Atmos**. Public sample sources:
+
+- **Kodi samples wiki** — <https://kodi.wiki/view/Samples> (see the Dolby TrueHD / Atmos entries).
+- **r/hometheater — "surround sound test files in almost every format"** —
+  <https://www.reddit.com/r/hometheater/comments/11qqv95/surround_sound_test_files_in_almost_every_format/>
+  (links to TrueHD Atmos, DD+ JOC Atmos and more).
+
+A **TrueHD Atmos** clip is the lossless source you decode to a DAMF master; a known-good **DD+ JOC
+Atmos** clip is handy as a reference for `jocprobe` / `emdfverify`.
+
+## Toolchain: from a Blu-ray MKV to a testable stream
+
+Tools: [`truehdd`](https://github.com/truehdd/truehdd), `ffmpeg` (≥5), `mkvextract` / `mkvmerge`
+(MKVToolNix), this crate, and optionally Cavern (verification, below).
 
 ```sh
-# 1. Decode TrueHD Atmos -> DAMF master (external tool, https://github.com/truehdd/truehdd):
-truehdd decode movie.thd --output-path master       # -> master.atmos / .audio / .metadata
+# 0. Build this tool.
+cargo build --release                              # -> target/release/dolby-atmos-encoder
 
-# 2. Encode the DAMF metadata onto an E-AC-3 core -> DD+ JOC:
+# 1. Extract the TrueHD elementary stream from the MKV.
+#    Find the TrueHD track first:  ffprobe movie.mkv
+ffmpeg -i movie.mkv -map 0:a:0 -c copy -f truehd movie.thd
+#    (or, by track id:  mkvextract tracks movie.mkv 1:movie.thd)
+
+# 2. Decode TrueHD -> Dolby Atmos Master (DAMF).  --presentation 3 selects the Atmos presentation.
+truehdd decode --presentation 3 movie.thd --output-path master
+#    -> master.atmos  +  master.atmos.audio  +  master.atmos.metadata
+
+# 3. Render objects to a 5.1 bed, then encode an E-AC-3 core with ffmpeg.
+dolby-atmos-encoder downmix master.atmos --out downmix.wav
+ffmpeg -i downmix.wav -c:a eac3 -b:a 768k -f eac3 core.eac3
+
+# 4. Inject per-frame Atmos metadata (OAMD + JOC + the addbsi detection flag) into the core.
 dolby-atmos-encoder atmos core.eac3 master.atmos --out atmos.eac3
+#    (add  --emdf-key <hex>  to sign the EMDF protection field — see "The signing seam")
+
+# 5. Mux into an MKV alongside your video.
+mkvmerge -o out.mkv --no-audio movie.mkv atmos.eac3
+
+# 6. Quick check (full verification with Cavern below).
+ffmpeg -i atmos.eac3            # expect: Audio: eac3 (... Dolby Atmos ...)
 ```
 
-Subcommands (run `--help` on each):
+> ⚠️ This yields a stream ffmpeg/Cavern accept as Atmos, but it will **not** engage Atmos on
+> Dolby-certified hardware — see [Why it can't fully work](#why-it-cant-fully-work).
+
+### Subcommands
+
+Run `--help` on each for details.
 
 | Command | Purpose |
 |---|---|
 | `inspect <atmos>` | Report a DAMF master's bed/object layout and metadata. |
 | `downmix <atmos> --out d.wav` | Render objects to a 5.1 bed WAV. |
-| `atmos <core> <atmos> --out o.eac3` | Inject OAMD+JOC Atmos metadata into an E-AC-3 core. |
+| `atmos <core> <atmos> --out o.eac3` | Inject OAMD+JOC metadata + the addbsi flag into an E-AC-3 core. |
 | `oamd <core> <atmos> --out o.eac3` | OAMD only (no JOC). |
 | `coregraft <realcore> <myatmos> --out o.eac3` | Splice our metadata onto a real Dolby core (diagnostic). |
 | `graft <core> <reference> --out o.eac3` | Splice Dolby's metadata onto our core (diagnostic). |
@@ -77,6 +117,33 @@ Subcommands (run `--help` on each):
 
 Global: `--emdf-key <hex|@file>` and `--emdf-key-id <0..7>` (or `DOLBY_EMDF_KEY`) — see
 [The signing seam](#the-signing-seam---emdf-key).
+
+## Verifying with Cavern
+
+[Cavern](https://github.com/VoidXH/Cavern) is the open-source decoder we validate against: if Cavern
+reports objects, the OAMD/JOC metadata is well-formed. A small harness is included in
+[`tools/cavernprobe`](tools/cavernprobe):
+
+```sh
+# Needs the .NET 8 SDK and a local Cavern checkout (adjust the path in cavernprobe.csproj).
+dotnet build tools/cavernprobe -c Release
+dotnet tools/cavernprobe/bin/Release/net8.0/cavernprobe.dll atmos.eac3
+```
+
+It prints the channel layout, **`HasObjects`**, and the decoder's full metadata (`object_count`,
+`joc_num_objects`, object positions). On a stream from this tool:
+
+```
+channels    : 6
+HasObjects  : True
+[JOC information]
+  joc_num_objects (Number of rendered dynamic objects): ...
+...
+RESULT: object-based audio detected (Atmos objects present).
+```
+
+Exit code `0` = objects present, `2` = channel-based only. (ffmpeg ≥5's `eac3` decoder also reports
+`+ Dolby Atmos` as a faster first-pass sanity check.)
 
 ---
 

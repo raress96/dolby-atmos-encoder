@@ -5,6 +5,8 @@
 //! VoidXH/Cavern's `EnhancedAC3Header.Decode()`. NOTE: Cavern is under a non-commercial
 //! licence (see convert-poc/PROGRESS.md) — this is for personal/local use; attribution kept.
 
+use std::io::{self, Read, Write};
+
 const SYNCWORD: [u8; 2] = [0x0B, 0x77];
 /// numblkscod -> number of audio blocks per syncframe.
 const NUM_BLOCKS: [u8; 4] = [1, 2, 3, 6];
@@ -20,7 +22,10 @@ struct BitReader<'a> {
 
 impl<'a> BitReader<'a> {
     fn new(data: &'a [u8], byte_offset: usize) -> Self {
-        Self { data, pos: byte_offset * 8 }
+        Self {
+            data,
+            pos: byte_offset * 8,
+        }
     }
 
     /// Position the reader at an absolute bit offset.
@@ -89,6 +94,40 @@ impl FrameInfo {
     }
 }
 
+/// Decode one syncframe's [`FrameInfo`], assuming a syncword at `off` with at least 6 bytes
+/// available from there. Shared by [`parse_frames`] and the streaming [`transform_frames_io`].
+fn read_frame_header(data: &[u8], off: usize) -> FrameInfo {
+    let mut r = BitReader::new(data, off);
+    let _sync = r.read(16);
+    let strmtyp = r.read(2) as u8;
+    let substreamid = r.read(3) as u8;
+    let words = r.read(11) as usize + 1; // words_per_syncframe
+    let size = words * 2;
+    let fscod = r.read(2) as u8;
+    let numblkscod = r.read(2) as usize;
+    let acmod = r.read(3) as u8;
+    let lfe = r.read(1) == 1;
+    let bsid = r.read(5) as u8;
+    let blocks = if fscod == 3 {
+        6
+    } else {
+        NUM_BLOCKS[numblkscod]
+    };
+    let sample_rate = SAMPLE_RATES[fscod as usize];
+    FrameInfo {
+        offset: off,
+        size,
+        strmtyp,
+        substreamid,
+        blocks,
+        fscod,
+        sample_rate,
+        acmod,
+        lfe,
+        bsid,
+    }
+}
+
 /// Parse every E-AC-3 syncframe in a raw elementary stream.
 pub fn parse_frames(data: &[u8]) -> Vec<FrameInfo> {
     let mut frames = Vec::new();
@@ -104,33 +143,9 @@ pub fn parse_frames(data: &[u8]) -> Vec<FrameInfo> {
             }
         }
 
-        let mut r = BitReader::new(data, off);
-        let _sync = r.read(16);
-        let strmtyp = r.read(2) as u8;
-        let substreamid = r.read(3) as u8;
-        let words = r.read(11) as usize + 1; // words_per_syncframe
-        let size = words * 2;
-        let fscod = r.read(2) as u8;
-        let numblkscod = r.read(2) as usize;
-        let acmod = r.read(3) as u8;
-        let lfe = r.read(1) == 1;
-        let bsid = r.read(5) as u8;
-
-        let blocks = if fscod == 3 { 6 } else { NUM_BLOCKS[numblkscod] };
-        let sample_rate = SAMPLE_RATES[fscod as usize];
-
-        frames.push(FrameInfo {
-            offset: off,
-            size,
-            strmtyp,
-            substreamid,
-            blocks,
-            fscod,
-            sample_rate,
-            acmod,
-            lfe,
-            bsid,
-        });
+        let info = read_frame_header(data, off);
+        let size = info.size;
+        frames.push(info);
 
         if size == 0 {
             break; // malformed; avoid infinite loop
@@ -170,7 +185,11 @@ struct BitWriter {
 
 impl BitWriter {
     fn with_capacity(cap: usize) -> Self {
-        Self { out: Vec::with_capacity(cap), cur: 0, nbits: 0 }
+        Self {
+            out: Vec::with_capacity(cap),
+            cur: 0,
+            nbits: 0,
+        }
     }
 
     #[inline]
@@ -721,7 +740,10 @@ pub fn inject_frame_full(
 ) -> Vec<u8> {
     let l = frame.len() * 8;
     let (p, addbsie) = bsi_addbsie_pos(frame, info).expect("E-AC-3 BSI parse");
-    assert_eq!(addbsie, 0, "frame already carries addbsi (addbsie=1) — unsupported");
+    assert_eq!(
+        addbsie, 0,
+        "frame already carries addbsi (addbsie=1) — unsupported"
+    );
     let addbsi_bits = addbsi.len() * 8;
 
     // Pre-crc bit budget (derivation in convert-poc notes): l + addbsi_bits + aux_bits + gap + 4.
@@ -730,7 +752,10 @@ pub fn inject_frame_full(
     if ns % 2 != 0 {
         ns += 1;
     }
-    assert!(ns <= MAX_FRAME_BYTES, "injected frame {ns} B exceeds E-AC-3 max {MAX_FRAME_BYTES} B");
+    assert!(
+        ns <= MAX_FRAME_BYTES,
+        "injected frame {ns} B exceeds E-AC-3 max {MAX_FRAME_BYTES} B"
+    );
     let gap = ns * 8 - fixed;
 
     // Patch frmsiz in a copy of the front bytes.
@@ -777,7 +802,11 @@ pub fn inject_frame_skipfield(
     emdf: &[u8],
     target_block: usize,
 ) -> Option<Vec<u8>> {
-    assert!(emdf.len() <= 511, "EMDF {} B exceeds skipl 9-bit max", emdf.len());
+    assert!(
+        emdf.len() <= 511,
+        "EMDF {} B exceeds skipl 9-bit max",
+        emdf.len()
+    );
     let l = frame.len() * 8;
     let (p, addbsie) = bsi_addbsie_pos(frame, info)?;
     if addbsie != 0 {
@@ -1004,4 +1033,210 @@ where
         out.extend_from_slice(&data[cursor..]);
     }
     out
+}
+
+/// Streaming counterpart of [`inject_stream`], generalised to arbitrary per-frame transforms.
+///
+/// Reads an E-AC-3 elementary stream from `reader`, hands each whole syncframe to `process`
+/// (`process(frame_info, global_frame_index, frame_bytes) -> replacement_bytes`), and writes the
+/// result to `writer`. Resync gaps between frames and any trailing partial bytes are copied
+/// verbatim. Only a bounded window (~4 MiB plus one frame) is ever held in memory, so memory use is
+/// independent of file size. Returns the number of frames processed.
+///
+/// For the same input and an equivalent transform, the output is byte-for-byte identical to walking
+/// [`parse_frames`] over the whole buffer and transforming each frame (see the tests).
+pub fn transform_frames_io<R, W, F>(reader: R, writer: W, process: F) -> io::Result<usize>
+where
+    R: Read,
+    W: Write,
+    F: FnMut(&FrameInfo, usize, &[u8]) -> Vec<u8>,
+{
+    transform_frames_io_chunked(reader, writer, 1 << 22, process) // 4 MiB read granularity
+}
+
+fn transform_frames_io_chunked<R, W, F>(
+    mut reader: R,
+    mut writer: W,
+    chunk: usize,
+    mut process: F,
+) -> io::Result<usize>
+where
+    R: Read,
+    W: Write,
+    F: FnMut(&FrameInfo, usize, &[u8]) -> Vec<u8>,
+{
+    let chunk = chunk.max(8);
+    let mut buf: Vec<u8> = Vec::new();
+    let mut eof = false;
+    let mut frame_idx = 0usize;
+
+    while !eof || !buf.is_empty() {
+        // Pull another chunk from the reader (until EOF), appended to any leftover partial frame.
+        if !eof {
+            let start = buf.len();
+            buf.resize(start + chunk, 0);
+            let mut filled = start;
+            while filled < buf.len() {
+                match reader.read(&mut buf[filled..])? {
+                    0 => {
+                        eof = true;
+                        break;
+                    }
+                    n => filled += n,
+                }
+            }
+            buf.truncate(filled);
+        }
+
+        // Emit every complete frame (and verbatim resync gap) the buffer currently holds.
+        let mut pos = 0usize;
+        loop {
+            if pos + 2 > buf.len() {
+                break; // need more bytes to test the syncword
+            }
+            if buf[pos..pos + 2] != SYNCWORD {
+                match find_sync(&buf, pos) {
+                    Some(p) => {
+                        writer.write_all(&buf[pos..p])?; // resync gap, verbatim
+                        pos = p;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            if pos + 6 > buf.len() {
+                break; // need the 6-byte header to learn the frame size
+            }
+            let mut info = read_frame_header(&buf, pos);
+            info.offset = 0; // `frame_bytes` is slice-relative; an absolute offset is meaningless
+            let size = info.size;
+            if size == 0 {
+                // Unreachable for valid streams (words+1 >= 1 -> size >= 2); resync defensively.
+                match find_sync(&buf, pos + 1) {
+                    Some(p) => {
+                        writer.write_all(&buf[pos..p])?;
+                        pos = p;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            if pos + size > buf.len() {
+                break; // frame not fully buffered yet
+            }
+            let outframe = process(&info, frame_idx, &buf[pos..pos + size]);
+            writer.write_all(&outframe)?;
+            frame_idx += 1;
+            pos += size;
+        }
+
+        // At EOF, whatever is left (incomplete final frame / trailing bytes) is copied verbatim,
+        // matching `inject_stream`'s trailing copy.
+        if eof && pos < buf.len() {
+            writer.write_all(&buf[pos..])?;
+            pos = buf.len();
+        }
+        buf.drain(..pos);
+    }
+
+    writer.flush()?;
+    Ok(frame_idx)
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// Build a synthetic E-AC-3 syncframe of `size` bytes (even, 4..=4096): valid syncword +
+    /// `words_per_syncframe` header so `read_frame_header` reports `size`; body filled with `fill`.
+    fn synth_frame(size: usize, fill: u8) -> Vec<u8> {
+        assert!(size >= 4 && size % 2 == 0 && size <= 4096);
+        let words = (size / 2 - 1) as u16; // 11-bit field
+        let mut f = vec![fill; size];
+        f[0] = 0x0B;
+        f[1] = 0x77;
+        f[2] = ((words >> 8) & 0x07) as u8; // strmtyp=0, substreamid=0, words[10:8]
+        f[3] = (words & 0xFF) as u8; // words[7:0]
+        f
+    }
+
+    fn synth_stream() -> Vec<u8> {
+        let mut d = Vec::new();
+        for &s in &[8usize, 16, 4, 32, 6] {
+            d.extend_from_slice(&synth_frame(s, 0xAA));
+        }
+        d
+    }
+
+    #[test]
+    fn identity_reproduces_input_across_tiny_chunks() {
+        let data = synth_stream();
+        for &chunk in &[8usize, 7, 13, 1024] {
+            let mut out = Vec::new();
+            let n =
+                transform_frames_io_chunked(Cursor::new(&data), &mut out, chunk, |_i, _n, f| {
+                    f.to_vec()
+                })
+                .unwrap();
+            assert_eq!(out, data, "identity must reproduce input (chunk={chunk})");
+            assert_eq!(n, 5, "frame count (chunk={chunk})");
+        }
+    }
+
+    #[test]
+    fn passthrough_matches_inject_stream() {
+        let data = synth_stream();
+        let mem = inject_stream(&data, |_f, _i| None); // None => copy each frame verbatim
+        let mut streamed = Vec::new();
+        transform_frames_io_chunked(Cursor::new(&data), &mut streamed, 9, |_i, _n, f| f.to_vec())
+            .unwrap();
+        assert_eq!(streamed, mem);
+        assert_eq!(streamed, data);
+    }
+
+    #[test]
+    fn resync_gaps_copied_verbatim() {
+        // Junk (non-syncword) bytes before, between, and after frames must survive untouched.
+        let mut data = vec![0x01, 0x02, 0x03];
+        data.extend_from_slice(&synth_frame(8, 0xAA));
+        data.extend_from_slice(&[0x10, 0x20]); // gap
+        data.extend_from_slice(&synth_frame(6, 0xBB));
+        data.push(0x55); // trailing
+        let mut out = Vec::new();
+        transform_frames_io_chunked(Cursor::new(&data), &mut out, 5, |_i, _n, f| f.to_vec())
+            .unwrap();
+        assert_eq!(out, data);
+    }
+
+    #[test]
+    fn growth_matches_in_memory_reference() {
+        let mut data = vec![0x09]; // leading gap byte
+        data.extend_from_slice(&synth_frame(8, 0xAA));
+        data.extend_from_slice(&[0x11, 0x22]); // gap
+        data.extend_from_slice(&synth_frame(12, 0xCC));
+        let grow = |f: &[u8]| {
+            let mut v = f.to_vec();
+            v.extend_from_slice(b"\xEE\xEE");
+            v
+        };
+        // In-memory reference over parse_frames.
+        let frames = parse_frames(&data);
+        let mut want = Vec::new();
+        let mut cursor = 0usize;
+        for f in &frames {
+            if f.offset > cursor {
+                want.extend_from_slice(&data[cursor..f.offset]);
+            }
+            want.extend_from_slice(&grow(&data[f.offset..f.offset + f.size]));
+            cursor = f.offset + f.size;
+        }
+        if cursor < data.len() {
+            want.extend_from_slice(&data[cursor..]);
+        }
+        // Streaming, tiny chunk to force frame/gap splits across reads.
+        let mut got = Vec::new();
+        transform_frames_io_chunked(Cursor::new(&data), &mut got, 5, |_i, _n, f| grow(f)).unwrap();
+        assert_eq!(got, want);
+    }
 }

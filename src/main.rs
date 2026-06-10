@@ -29,6 +29,7 @@ mod render;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -617,9 +618,16 @@ fn atmos_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
     // addbsi §8.3: reserved(7)=0 · flag_ec3_extension_type_a(1)=1 · complexity_index_type_a(8).
     let addbsi = [0x01u8, complexity];
 
-    let mut out_buf = Vec::with_capacity(ctx.data.len() * 11 / 10);
+    // Stream each injected frame straight to the output (no doubled output buffer) and self-verify
+    // it inline (replacing the old whole-output re-parse pass).
+    let mut writer = std::io::BufWriter::new(
+        std::fs::File::create(out).with_context(|| format!("writing {}", out.display()))?,
+    );
     let mut emdf_bytes = 0usize;
     let mut skipfield_frames = 0usize;
+    let (mut flag_ok, mut oamd_ok, mut joc_ok) = (0usize, 0usize, 0usize);
+    let mut out_bytes = 0u64;
+    let nframes = ctx.frames.len();
     for (i, f) in ctx.frames.iter().enumerate() {
         let frame = &ctx.data[f.offset..f.offset + f.size];
         let objs = frame_objects(&ctx, i);
@@ -646,56 +654,61 @@ fn atmos_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
             }
             None => eac3::inject_frame_full(frame, f, &addbsi, &payload, payload.len() * 8),
         };
-        out_buf.extend_from_slice(&injected);
-    }
-    std::fs::write(out, &out_buf).with_context(|| format!("writing {}", out.display()))?;
-
-    // Self-verify: read the addbsi flag, OAMD and JOC back from every output frame. The EMDF is
-    // bit-scanned anywhere in the frame (skip-field carriage is not byte-aligned).
-    let outframes = eac3::parse_frames(&out_buf);
-    let (mut flag_ok, mut oamd_ok, mut joc_ok, checked) = (0usize, 0usize, 0usize, outframes.len());
-    for f in &outframes {
-        let frame = &out_buf[f.offset..f.offset + f.size];
-        if let Some((flag, cx)) = eac3::read_addbsi(frame, f) {
-            if flag && cx as usize == object_count {
-                flag_ok += 1;
-            }
-        }
-        if let Some((_, aligned)) = joc::find_emdf_anywhere(frame) {
-            if let Some(d) = emdf::decode_emdf_oamd(&aligned) {
-                if d.object_count == object_count {
-                    oamd_ok += 1;
+        // Self-verify this frame: read the addbsi flag, OAMD and JOC back. The EMDF is bit-scanned
+        // anywhere in the frame (skip-field carriage is not byte-aligned).
+        let oframes = eac3::parse_frames(&injected);
+        if let Some(of) = oframes.first() {
+            let oframe = &injected[of.offset..of.offset + of.size];
+            if let Some((flag, cx)) = eac3::read_addbsi(oframe, of) {
+                if flag && cx as usize == object_count {
+                    flag_ok += 1;
                 }
             }
-            if let Some(payloads) = emdf::extract_emdf_payloads(&aligned) {
-                if let Some((_, jp)) = payloads.iter().find(|(id, _)| *id == emdf::PAYLOAD_JOC) {
-                    if let Ok(jf) = joc::decode_joc(jp) {
-                        if jf.object_count == ctx.nobj {
-                            joc_ok += 1;
+            if let Some((_, aligned)) = joc::find_emdf_anywhere(oframe) {
+                if let Some(d) = emdf::decode_emdf_oamd(&aligned) {
+                    if d.object_count == object_count {
+                        oamd_ok += 1;
+                    }
+                }
+                if let Some(payloads) = emdf::extract_emdf_payloads(&aligned) {
+                    if let Some((_, jp)) = payloads.iter().find(|(id, _)| *id == emdf::PAYLOAD_JOC)
+                    {
+                        if let Ok(jf) = joc::decode_joc(jp) {
+                            if jf.object_count == ctx.nobj {
+                                joc_ok += 1;
+                            }
                         }
                     }
                 }
             }
         }
+        out_bytes += injected.len() as u64;
+        writer
+            .write_all(&injected)
+            .with_context(|| format!("writing {}", out.display()))?;
     }
+    writer
+        .flush()
+        .with_context(|| format!("flushing {}", out.display()))?;
+    drop(writer);
 
-    let grew = out_buf.len() as i64 - ctx.data.len() as i64;
+    let checked = nframes;
+    let grew = out_bytes as i64 - ctx.data.len() as i64;
     println!(
         "Atmos inject: addbsi flag (complexity={complexity}) + OAMD ({} dyn + 1 LFE) + JOC ({} obj, avg {} B EMDF/frame) → {} frames",
         ctx.nobj,
         ctx.nobj,
-        emdf_bytes / ctx.frames.len(),
-        outframes.len()
+        emdf_bytes / nframes,
+        nframes
     );
     println!(
         "  carriage: skip-field {}/{} frames (rest fell back to auxdata)",
-        skipfield_frames,
-        ctx.frames.len()
+        skipfield_frames, nframes
     );
     println!(
         "  size {} -> {} B (+{} B, +{:.1}%)",
         ctx.data.len(),
-        out_buf.len(),
+        out_bytes,
         grew,
         grew as f64 / ctx.data.len() as f64 * 100.0
     );
@@ -937,26 +950,22 @@ fn oamd_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
         .collect();
     let nobj = timelines.len();
 
-    // Load the core stream and map each frame to its start sample (advance on independent frames).
-    let data = std::fs::read(core).with_context(|| format!("reading {}", core.display()))?;
-    let frames = eac3::parse_frames(&data);
-    anyhow::ensure!(
-        !frames.is_empty(),
-        "no E-AC-3 syncframes in {}",
-        core.display()
+    // Stream the core, injecting a per-frame OAMD payload and self-verifying inline. A running
+    // sample counter reproduces each frame's start sample (advanced on independent frames), so
+    // memory use stays bounded regardless of the core's length.
+    let reader = std::io::BufReader::new(
+        std::fs::File::open(core).with_context(|| format!("reading {}", core.display()))?,
     );
-    let mut start_samples = Vec::with_capacity(frames.len());
-    let mut acc = 0u64;
-    for f in &frames {
-        start_samples.push(acc);
-        if f.strmtyp == 0 {
-            acc += f.samples() as u64;
+    let writer = std::io::BufWriter::new(
+        std::fs::File::create(out).with_context(|| format!("writing {}", out.display()))?,
+    );
+    let mut acc = 0u64; // samples before the current frame
+    let (mut ok, mut checked) = (0usize, 0usize);
+    let frames = eac3::transform_frames_io(reader, writer, |info, _i, frame| {
+        let t = acc + info.samples() as u64; // sample position at frame end (ramp target)
+        if info.strmtyp == 0 {
+            acc += info.samples() as u64;
         }
-    }
-
-    // Inject a per-frame OAMD payload. Sample positions at frame end (ramp target).
-    let injected = eac3::inject_stream(&data, |f, i| {
-        let t = start_samples[i] + f.samples() as u64;
         let objs: Vec<emdf::ObjectPos> = timelines
             .iter()
             .map(|tl| {
@@ -970,16 +979,8 @@ fn oamd_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
             .collect();
         let payload = emdf::encode_frame_emdf(&objs, true);
         let bits = payload.len() * 8;
-        Some((payload, bits))
-    });
-    std::fs::write(out, &injected).with_context(|| format!("writing {}", out.display()))?;
-
-    // Self-verify: round-trip the OAMD back out of every output frame.
-    let outframes = eac3::parse_frames(&injected);
-    let (mut ok, mut checked) = (0usize, 0usize);
-    for f in &outframes {
-        let frame = &injected[f.offset..f.offset + f.size];
-        if let Some((aux, _)) = eac3::read_aux(frame) {
+        let injected = eac3::inject_aux(frame, &payload, bits);
+        if let Some((aux, _)) = eac3::read_aux(&injected) {
             if let Some(d) = emdf::decode_emdf_oamd(&aux) {
                 checked += 1;
                 if d.object_count == nobj + 1 && d.bed_count == 1 {
@@ -987,19 +988,21 @@ fn oamd_inject(core: &Path, atmos: &Path, out: &Path) -> Result<()> {
                 }
             }
         }
-    }
+        injected
+    })
+    .with_context(|| format!("streaming {} -> {}", core.display(), out.display()))?;
+    anyhow::ensure!(frames > 0, "no E-AC-3 syncframes in {}", core.display());
 
-    let grew = injected.len() as i64 - data.len() as i64;
-    println!(
-        "OAMD inject: {nobj} dynamic objects + 1 LFE bed → {} frames",
-        outframes.len()
-    );
+    let in_sz = std::fs::metadata(core)?.len();
+    let out_sz = std::fs::metadata(out)?.len();
+    let grew = out_sz as i64 - in_sz as i64;
+    println!("OAMD inject: {nobj} dynamic objects + 1 LFE bed → {frames} frames");
     println!(
         "  size {} -> {} B (+{} B, +{:.1}%)",
-        data.len(),
-        injected.len(),
+        in_sz,
+        out_sz,
         grew,
-        grew as f64 / data.len() as f64 * 100.0
+        grew as f64 / in_sz as f64 * 100.0
     );
     println!(
         "  OAMD round-trip OK on {ok}/{checked} frames (object_count={}, bed=1)",
@@ -1015,55 +1018,53 @@ fn eac3inject(input: &Path, out: &Path, marker: &str) -> Result<()> {
     anyhow::ensure!(!payload.is_empty(), "marker payload is empty");
     let bits = payload.len() * 8;
 
-    let data = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
-    let before = eac3::parse_frames(&data);
-    anyhow::ensure!(
-        !before.is_empty(),
-        "no E-AC-3 syncframes in {}",
-        input.display()
+    let reader = std::io::BufReader::new(
+        std::fs::File::open(input).with_context(|| format!("reading {}", input.display()))?,
+    );
+    let writer = std::io::BufWriter::new(
+        std::fs::File::create(out).with_context(|| format!("writing {}", out.display()))?,
     );
 
-    // Inject the marker into every frame.
-    let injected = eac3::inject_stream(&data, |_f, _i| Some((payload.clone(), bits)));
-    std::fs::write(out, &injected).with_context(|| format!("writing {}", out.display()))?;
-
-    // Self-verify: re-parse the output, confirm frame count is preserved and the
-    // marker round-trips out of the aux field of every frame.
-    let after = eac3::parse_frames(&injected);
-    anyhow::ensure!(
-        after.len() == before.len(),
-        "frame count changed after injection: {} -> {}",
-        before.len(),
-        after.len()
-    );
+    // Stream the marker into every frame's aux field, self-verifying the round-trip inline. Only a
+    // bounded window is held in memory, so this works for arbitrarily large inputs.
     let mut ok = 0usize;
-    for f in &after {
-        let frame = &injected[f.offset..f.offset + f.size];
-        match eac3::read_aux(frame) {
+    let mut bad: Option<String> = None;
+    let frames = eac3::transform_frames_io(reader, writer, |_info, _i, frame| {
+        let injected = eac3::inject_aux(frame, &payload, bits);
+        match eac3::read_aux(&injected) {
             Some((got, got_bits)) if got_bits == bits && got[..payload.len()] == payload[..] => {
                 ok += 1
             }
-            other => anyhow::bail!(
-                "aux round-trip failed at frame off {}: {:?}",
-                f.offset,
-                other
-            ),
+            other => {
+                if bad.is_none() {
+                    bad = Some(format!("{other:?}"));
+                }
+            }
         }
+        injected
+    })
+    .with_context(|| format!("streaming {} -> {}", input.display(), out.display()))?;
+
+    anyhow::ensure!(frames > 0, "no E-AC-3 syncframes in {}", input.display());
+    if let Some(b) = bad {
+        anyhow::bail!("aux round-trip failed: {b}");
     }
 
-    let grew = injected.len() as i64 - data.len() as i64;
+    let in_sz = std::fs::metadata(input)?.len();
+    let out_sz = std::fs::metadata(out)?.len();
+    let grew = out_sz as i64 - in_sz as i64;
     println!(
         "injected marker {} ({} B) into {} frames",
         marker,
         payload.len(),
-        after.len()
+        frames
     );
     println!(
         "  size {} -> {} B (+{} B, +{:.1}%)",
-        data.len(),
-        injected.len(),
+        in_sz,
+        out_sz,
         grew,
-        grew as f64 / data.len() as f64 * 100.0
+        grew as f64 / in_sz as f64 * 100.0
     );
     println!("  aux round-trip verified on all {ok} frames");
     println!("  wrote {}", out.display());

@@ -51,6 +51,16 @@ cargo build --release
 `truehdd` produces. The only out-of-the-ordinary deps are `hmac`/`sha2`, used by the EMDF signing
 seam.)
 
+### Memory use (large files)
+
+The frame pipeline streams: `eac3::transform_frames_io` reads the E-AC-3 core in a few-MiB rolling
+buffer, transforms each syncframe, and writes it straight out, so memory stays bounded regardless of
+file length (E-AC-3 frames are ≤4 KB, so a 4 MiB chunk batches ~1000 frames per read). `eac3inject`
+and `oamd` are fully streamed (input + output); `atmos` streams its output and still loads the core
+once for per-frame JOC context. Fully streaming `atmos`'s input and the (large) master audio essence
+is possible future work. Note: this is plain synchronous streaming — `async` would add a runtime
+without helping a single-file, CPU-bound batch transform.
+
 ## Test files / samples
 
 You need a source that actually contains **Dolby TrueHD + Atmos**. Public sample sources:

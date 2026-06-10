@@ -175,9 +175,18 @@ pub fn downmix(atmos: &Path, out: &Path, gain_db: f64) -> Result<()> {
     let mut r = BufReader::new(File::open(dir.join(&pres.audio))?);
     r.seek(SeekFrom::Start(caf.data_offset))?;
 
-    // Open output WAV (32-bit float, 5.1).
-    let mut w = BufWriter::new(File::create(out)?);
-    write_wav_header(&mut w, 6, caf.sample_rate as u32, total_frames)?;
+    // Output: a 32-bit-float 5.1 WAV file, or — when `out` is "-" — raw f32le interleaved PCM to
+    // stdout. The raw mode has no 4 GB WAV size cap, so it handles full-length films; pipe it to
+    // e.g. `ffmpeg -f f32le -ar <sr> -ac 6 -i - ...`.
+    let to_stdout = out == Path::new("-");
+    let mut w: BufWriter<Box<dyn Write>> = BufWriter::new(if to_stdout {
+        Box::new(std::io::stdout())
+    } else {
+        Box::new(File::create(out).with_context(|| format!("creating {}", out.display()))?)
+    });
+    if !to_stdout {
+        write_wav_header(&mut w, 6, caf.sample_rate as u32, total_frames)?;
+    }
 
     let block = 8192usize;
     let mut inbuf = vec![0u8; block * channels * 3];

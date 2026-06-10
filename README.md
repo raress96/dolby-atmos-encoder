@@ -178,7 +178,7 @@ This project stands on open specifications and existing projects:
 - **[VoidXH/Cavern](https://github.com/VoidXH/Cavern)** — creator Bence Sgánetz
   (<http://en.sbence.hu>). DSP/codec math for the 5.1 rendering, the OAMD/JOC decode logic, and the
   object gain handling was **ported / adapted from Cavern's C# decoder**. Cavern is released under
-  its own **non-commercial, share-alike licence** — see [Licensing](#licensing--important) below.
+  its own **non-commercial, share-alike licence** — see [Licensing](#licensing) below.
 - **[truehdd](https://github.com/truehdd/truehdd)** (Apache-2.0) — the Dolby TrueHD decoder that
   produces the DAMF (`.atmos` / `.audio` / `.metadata`) master this tool consumes. This crate began
   life as a `truehdd` workspace member before being extracted into its own repository.
@@ -192,27 +192,22 @@ This project stands on open specifications and existing projects:
   [Dolby Encoding Engine](https://github.com/DolbyLaboratories/dolby-encoding-engine) plugin SDK
   were *examined* for context only. **No Dolby source code or keys are used or included here.**
 
-## Licensing — IMPORTANT
+## Licensing
 
-> ⚠️ **Unresolved conflict.** The GitHub repository currently carries an **MIT** LICENSE, which is
-> **incompatible with the Cavern-derived code** in `src/`. This must be resolved before the code is
-> published.
+This project **includes code ported / adapted from
+[Cavern](https://github.com/VoidXH/Cavern)**, whose licence is **non-commercial and share-alike**
+and states that any project including the code remains bound by its terms. Accordingly the entire
+repository is released **under the Cavern licence** (see [`LICENSE`](LICENSE)), *not* MIT:
 
-Cavern's licence (see `LICENSE.md` in the Cavern repo) **forbids selling** any part of the original
-or a modified version, requires modifications to be **released for free under Cavern's own licence**
-(share-alike — *not* MIT, which permits selling/sublicensing), requires **linking Cavern's
-repository as the source** and crediting the creator, and states these terms **still apply** to any
-project that includes the code. MIT grants rights Cavern withholds, so the two cannot coexist on the
-same files.
+- ✅ free to use, modify, and redistribute **for free**;
+- ⛔ **no selling** any part of the original or a modified version;
+- ⛔ no advertisements in the software;
+- 🔗 Cavern (<https://github.com/VoidXH/Cavern>, creator <http://en.sbence.hu>) is credited and
+  linked as the source — in [Credits](#credits-sources--references) and in `LICENSE`;
+- public *use* (e.g. screenings) or commercial use requires the original Cavern creator's permission.
 
-Legitimate ways to resolve it:
-
-1. **Keep the repository private** — personal / research use only; remove or replace the MIT file.
-2. **Re-license the repo under Cavern's terms** (non-commercial, share-alike) with the required
-   Cavern attribution + source link — a legitimate *free* public release (but not MIT, not
-   commercial).
-3. **Clean-room rewrite** the Cavern-derived portions (re-derive from the ETSI specs without
-   consulting Cavern's source); only then can the project legitimately be MIT.
+If a permissively-licensed (e.g. MIT) version is ever needed, the Cavern-derived portions must first
+be **clean-room rewritten** from the ETSI specs without consulting Cavern's source.
 
 `publish = false` is set in `Cargo.toml` to prevent accidental release to crates.io.
 

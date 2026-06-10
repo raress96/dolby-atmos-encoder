@@ -1,0 +1,39 @@
+# Licence
+
+`dolby-atmos-encoder` is a research / interoperability project that **includes
+source code ported and adapted from Cavern**:
+
+    Cavern — https://github.com/VoidXH/Cavern
+    Created by Bence Sgánetz — http://en.sbence.hu
+
+In accordance with the Cavern licence, this is a modified version released for
+free **under the same Cavern licence** (reproduced below), and the Cavern
+repository above is credited and linked as the source of the derived portions.
+
+Original, non-Cavern code in this repository is Copyright (c) 2026 Rareș, and is
+released under the same terms below. Because the Cavern licence states that its
+terms still apply to any project that includes the code, the entire project is
+governed by the Cavern licence (non-commercial, share-alike).
+
+This project is not affiliated with or endorsed by Dolby Laboratories. "Dolby",
+"Dolby Atmos", "Dolby Digital Plus" and "TrueHD" are trademarks of Dolby
+Laboratories. No Dolby source code or keys are included.
+
+--------------------------------------------------------------------------------
+
+# Cavern licence
+
+By downloading, using, copying, modifying, or compiling the source code or a
+build, you are accepting these terms. The source code, just like the compiled
+software, is given to you for free, but without any warranty. It is not
+guaranteed to work, and the developer is not responsible for any damages from
+the use of the software. You are allowed to make any modifications, and release
+them for free under this licence. If you release a modified version, you have to
+link this repository as its source. You are not allowed to sell any part of the
+original or the modified version. You are also not allowed to show
+advertisements in the modified software. The software must be named with a link
+to the creator (http://en.sbence.hu) when used in public (e.g. for screenings)
+or commercially (e.g. as an API in another software), also, the original
+creator's permission is required for public use (e.g. screening). If you include
+these code or any part of the original version in any other project, these terms
+still apply.

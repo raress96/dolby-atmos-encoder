@@ -202,7 +202,8 @@ does no channel coupling); there is no open-source Dolby-conformant E-AC-3 core 
 and we traced it to the EMDF `emdf_protection` field, which is a **keyed authentication code**, not
 a computable checksum:
 
-1. **The spec says so.** ETSI TS 102 366 v1.4.1 §H.2.2: `key_id` "identifies the **authentication
+1. **The spec says so.** [ETSI TS 102 366 v1.4.1](https://www.etsi.org/deliver/etsi_ts/102300_102399/102366/01.04.01_60/ts_102366v010401p.pdf)
+   §H.2.2: `key_id` "identifies the **authentication
    key** used to calculate the value of the `protection_bits_primary` and `protection_bits_secondary`
    fields," and that calculation is "**implementation dependent and is not defined in the present
    document**."
@@ -289,10 +290,13 @@ This project stands on open specifications and existing projects:
 - **[truehdd](https://github.com/truehdd/truehdd)** (Apache-2.0) — the Dolby TrueHD decoder that
   produces the DAMF (`.atmos` / `.audio` / `.metadata`) master this tool consumes. This crate began
   life as a `truehdd` workspace member before being extracted into its own repository.
-- **ETSI TS 102 366** — Digital Audio Compression (AC-3, Enhanced AC-3), including **Annex H** (the
-  EMDF extensible-metadata container and the `emdf_protection` field).
-- **ETSI TS 103 420** — backwards-compatible object audio coding (OAMD / Joint Object Coding).
-- **ATSC A/52** — the AC-3 audio-block syntax underpinning the skip-field bit-walker.
+- **[ETSI TS 102 366 V1.4.1](https://www.etsi.org/deliver/etsi_ts/102300_102399/102366/01.04.01_60/ts_102366v010401p.pdf)**
+  (free PDF) — Digital Audio Compression (AC-3, Enhanced AC-3), including **Annex H** (the EMDF
+  extensible-metadata container and the `emdf_protection` field).
+- **[ETSI TS 103 420 V1.2.1](https://www.etsi.org/deliver/etsi_ts/103400_103499/103420/01.02.01_60/ts_103420v010201p.pdf)**
+  (free PDF) — backwards-compatible carriage of object audio (OAMD / Joint Object Coding) in E-AC-3.
+- **[ATSC A/52:2018](https://www.atsc.org/wp-content/uploads/2021/04/A52-2018.pdf)** (free PDF) — the
+  AC-3 / E-AC-3 audio-block syntax underpinning the skip-field bit-walker.
 - **[FFmpeg](https://ffmpeg.org)** — used as an external tool for the E-AC-3 core encode and as a
   reference decoder/validator (invoked as a separate process; not linked).
 - **Dolby** specifications and the

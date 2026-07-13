@@ -1044,6 +1044,84 @@ fn dump_object_info_block(r: &mut BitReader, blk: usize, is_bed: bool, obj: usiz
     );
 }
 
+/// Bit offsets of the mutable fields inside a byte-aligned EMDF container (one that starts with the
+/// `0x5838` sync at bit 0 of `aligned`). All offsets are relative to that sync. Used by the
+/// `emdfmutate` probe to rewrite `key_id` / flip `protection_bits` in a genuine stream without
+/// disturbing any other bit. The payload walk mirrors `verify_emdf_protection` exactly.
+pub(crate) struct EmdfFieldOffsets {
+    /// Bit offset of the 3-bit `key_id` field (= 34 for `emdf_version == 0`).
+    pub key_id_bit: usize,
+    /// Bit offset where `protection_bits_primary` begins.
+    pub protection_start: usize,
+    /// Length of `protection_bits_primary` in bits (0/8/32/128).
+    pub prim_bits: u32,
+    /// Length of `protection_bits_secondary` in bits (0/8/32/128).
+    pub sec_bits: u32,
+}
+
+/// Locate the mutable EMDF fields in `aligned` (which must begin at the `0x5838` sync). Returns
+/// `None` if the container is malformed or truncated. Walk kept identical to the one embedded in
+/// `verify_emdf_protection` so both agree on `protection_start`.
+pub(crate) fn field_offsets(aligned: &[u8]) -> Option<EmdfFieldOffsets> {
+    let mut r = BitReader::new(aligned);
+    if r.read(16) != 0x5838 {
+        return None;
+    }
+    let _emdf_len = r.read(16);
+    let _version = r.read(2);
+    let key_id_bit = r.pos; // 34 when version == 0 (the only version genuine streams use)
+    let _key = r.read(3);
+    loop {
+        if r.pos + 5 > r.end {
+            return None;
+        }
+        let id = r.read(5) as u8;
+        if id == 0 {
+            break;
+        }
+        let smploffste = r.read_bit();
+        if smploffste {
+            r.read(12);
+        }
+        if r.read_bit() {
+            r.read_var(11, 8);
+        }
+        if r.read_bit() {
+            r.read_var(2, 8);
+        }
+        if r.read_bit() {
+            r.read(8);
+        }
+        if !r.read_bit() {
+            let mut fa = false;
+            if !smploffste {
+                fa = r.read_bit();
+                if fa {
+                    r.read(2);
+                }
+            }
+            if smploffste || fa {
+                r.read(7);
+            }
+        }
+        let size = r.read_var(8, 8) as usize;
+        r.pos += size * 8;
+        if r.pos > r.end {
+            return None;
+        }
+    }
+    let lenmap = [0u32, 8, 32, 128];
+    let prim_bits = lenmap[r.read(2) as usize];
+    let sec_bits = lenmap[r.read(2) as usize];
+    let protection_start = r.pos;
+    Some(EmdfFieldOffsets {
+        key_id_bit,
+        protection_start,
+        prim_bits,
+        sec_bits,
+    })
+}
+
 /// Check whether OUR emdf_protection CRC algorithm reproduces the protection bits embedded in a
 /// real EMDF. `buf` must start at (or before) a byte-aligned EMDF sync. The decisive question:
 /// does our crc32/crc8 == the stream's stored protection? If not, every container we emit carries

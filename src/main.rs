@@ -166,6 +166,26 @@ enum Command {
         #[arg(long)]
         complexity: Option<u8>,
     },
+    /// Hardware probe: mutate the EMDF of a GENUINE Dolby JOC stream in place (rewrite key_id and/or
+    /// flip protection_bits), recomputing each frame's CRC, so the ONLY invalid thing is the field
+    /// under test. Remux + play to learn whether the decoder validates protection_bits at all and
+    /// whether key_id=6 disables that check. With no mutation flag the output is byte-identical.
+    Emdfmutate {
+        /// Genuine Dolby DD+ JOC E-AC-3 stream to mutate (e.g. extracted from a known-Atmos file).
+        input: PathBuf,
+        /// Output E-AC-3 path.
+        #[arg(short, long, default_value = "mutated.eac3")]
+        out: PathBuf,
+        /// Rewrite the 3-bit key_id in every EMDF (e.g. 6 to test the AC-4 "ignore protection" idea).
+        #[arg(long)]
+        set_key_id: Option<u8>,
+        /// Flip one bit of protection_bits_primary (invalidates the primary protection value).
+        #[arg(long)]
+        corrupt_primary: bool,
+        /// Flip one bit of protection_bits_secondary (invalidates the secondary protection value).
+        #[arg(long)]
+        corrupt_secondary: bool,
+    },
 }
 
 /// Parse a `--emdf-key` value: raw hex, or `@path` to a file of hex (whitespace ignored).
@@ -205,6 +225,158 @@ mod key_tests {
         assert!(parse_emdf_key("").is_err());
         assert!(parse_emdf_key("abc").is_err());
     }
+}
+
+// --- MSB-first bit helpers for `emdfmutate` (bit order matches joc::find_emdf_anywhere) ---
+fn read_bits_msb(buf: &[u8], pos: usize, n: u32) -> u32 {
+    let mut v = 0u32;
+    for i in 0..n as usize {
+        let p = pos + i;
+        v = (v << 1) | ((buf[p >> 3] >> (7 - (p & 7))) & 1) as u32;
+    }
+    v
+}
+fn set_bit_msb(buf: &mut [u8], pos: usize, val: u8) {
+    let m = 1u8 << (7 - (pos & 7));
+    if val != 0 {
+        buf[pos >> 3] |= m;
+    } else {
+        buf[pos >> 3] &= !m;
+    }
+}
+fn write_bits_msb(buf: &mut [u8], pos: usize, val: u32, n: u32) {
+    for i in 0..n {
+        set_bit_msb(buf, pos + i as usize, ((val >> (n - 1 - i)) & 1) as u8);
+    }
+}
+fn flip_bit_msb(buf: &mut [u8], pos: usize) {
+    buf[pos >> 3] ^= 1u8 << (7 - (pos & 7));
+}
+
+/// Find the REAL Dolby EMDF container in a frame: the first `0x5838` sync whose payload walk yields
+/// the layout every genuine DD+ JOC stream uses (`protection_length` = 32-bit primary + 8-bit
+/// secondary). Requiring that layout rejects the coincidental `0x5838` bit patterns that appear in
+/// the coupled audio data (which `joc::find_emdf_anywhere` would otherwise return first). Returns
+/// the sync's bit offset within `frame` plus the validated field offsets.
+fn find_dolby_emdf(frame: &[u8]) -> Option<(usize, emdf::EmdfFieldOffsets)> {
+    let total_bits = frame.len() * 8;
+    let bit = |p: usize| (frame[p >> 3] >> (7 - (p & 7))) & 1;
+    for start in 0..total_bits.saturating_sub(16) {
+        let mut v = 0u16;
+        for i in 0..16 {
+            v = (v << 1) | bit(start + i) as u16;
+        }
+        if v != 0x5838 {
+            continue;
+        }
+        let nbytes = (total_bits - start).div_ceil(8);
+        let mut aligned = vec![0u8; nbytes];
+        for (i, p) in (start..total_bits).enumerate() {
+            if bit(p) != 0 {
+                aligned[i >> 3] |= 1 << (7 - (i & 7));
+            }
+        }
+        if let Some(off) = emdf::field_offsets(&aligned) {
+            if off.prim_bits == 32 && off.sec_bits == 8 {
+                return Some((start, off));
+            }
+        }
+    }
+    None
+}
+
+/// Mutate the EMDF of a genuine Dolby JOC stream in place — rewrite `key_id` and/or flip a
+/// `protection_bits` bit — recomputing each frame's CRC so the only invalid field is the one under
+/// test. See the `emdfmutate` subcommand help and `whimsical-growing-tower.md` for the test matrix.
+fn emdfmutate(
+    input: &Path,
+    out: &Path,
+    set_key_id: Option<u8>,
+    corrupt_primary: bool,
+    corrupt_secondary: bool,
+) -> Result<()> {
+    let data = std::fs::read(input).with_context(|| format!("reading {}", input.display()))?;
+    let frames = eac3::parse_frames(&data);
+    anyhow::ensure!(
+        !frames.is_empty(),
+        "no E-AC-3 syncframes in {}",
+        input.display()
+    );
+    if let Some(k) = set_key_id {
+        anyhow::ensure!(k <= 7, "key_id is a 3-bit field (0..=7), got {k}");
+    }
+
+    // Mutate in place in a clone so inter-frame bytes stay byte-identical; with no flag set the
+    // output equals the input exactly (the E0 transparency control).
+    let mut outdata = data.clone();
+    let (mut with_emdf, mut mutated) = (0usize, 0usize);
+    let mut first: Option<(u8, u8, u32, u32)> = None; // (orig_key_id, new_key_id, prim_bits, sec_bits)
+
+    for f in &frames {
+        let frame = &data[f.offset..f.offset + f.size];
+        let Some((start_bit, off)) = find_dolby_emdf(frame) else {
+            continue;
+        };
+        with_emdf += 1;
+        let fbit = f.offset * 8; // absolute bit base of this frame within outdata
+        let kbit = fbit + start_bit + off.key_id_bit;
+        let orig_key_id = read_bits_msb(&outdata, kbit, 3) as u8;
+
+        let mut changed = false;
+        if let Some(k) = set_key_id {
+            write_bits_msb(&mut outdata, kbit, k as u32, 3);
+            changed = true;
+        }
+        if corrupt_primary {
+            flip_bit_msb(&mut outdata, fbit + start_bit + off.protection_start);
+            changed = true;
+        }
+        if corrupt_secondary {
+            flip_bit_msb(
+                &mut outdata,
+                fbit + start_bit + off.protection_start + off.prim_bits as usize,
+            );
+            changed = true;
+        }
+
+        if changed {
+            // Recompute the E-AC-3 frame CRC (last two bytes, over frame[2..len-2]).
+            let (s, n) = (f.offset, f.size);
+            let crc = eac3::crc16(&outdata[s + 2..s + n - 2]);
+            outdata[s + n - 2] = (crc >> 8) as u8;
+            outdata[s + n - 1] = (crc & 0xff) as u8;
+            mutated += 1;
+        }
+        if first.is_none() {
+            first = Some((
+                orig_key_id,
+                set_key_id.unwrap_or(orig_key_id),
+                off.prim_bits,
+                off.sec_bits,
+            ));
+        }
+    }
+
+    anyhow::ensure!(
+        with_emdf > 0,
+        "no EMDF containers found in {}",
+        input.display()
+    );
+    std::fs::write(out, &outdata).with_context(|| format!("writing {}", out.display()))?;
+
+    if let Some((ok, nk, pb, sb)) = first {
+        println!(
+            "EMDF mutate: {} frames total, {with_emdf} carry EMDF, {mutated} mutated",
+            frames.len()
+        );
+        println!("  key_id: {ok} -> {nk}   protection: primary={pb}b secondary={sb}b");
+        if mutated == 0 {
+            println!("  (no mutation flags set — output is byte-identical to input)");
+        }
+    }
+    println!("  wrote  {}", out.display());
+    println!("  sanity : ffmpeg -i {} -f null -", out.display());
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -248,6 +420,13 @@ fn main() -> Result<()> {
             out,
             complexity,
         } => coregraft(&realcore, &myatmos, &out, complexity),
+        Command::Emdfmutate {
+            input,
+            out,
+            set_key_id,
+            corrupt_primary,
+            corrupt_secondary,
+        } => emdfmutate(&input, &out, set_key_id, corrupt_primary, corrupt_secondary),
         Command::Bsidump { input } => {
             let data = std::fs::read(&input)?;
             let frames = eac3::parse_frames(&data);
